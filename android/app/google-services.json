@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "24043997826",
+    "project_id": "paperlik-project",
+    "storage_bucket": "paperlik-project.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:24043997826:android:f6a4e94285da6f4a94029b",
+        "android_client_info": {
+          "package_name": "com.example.flutter_application_1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDLuqPE-St9nOuv59QITs4lU4GwvEwz8y8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
