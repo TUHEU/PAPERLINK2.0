@@ -5,23 +5,383 @@ import 'package:flutter/services.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
-// 🔥 ADD THESE IMPORTS FOR FILE VIEWING
 import 'package:pdfx/pdfx.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
+import 'package:path/path.dart' as path_lib;
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_animations/flutter_map_animations.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:get/get.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+
+// ==============================================
+// DATABASE HELPER FOR SQLITE
+// ==============================================
+
+class DatabaseHelper {
+  static final DatabaseHelper _instance = DatabaseHelper._internal();
+  factory DatabaseHelper() => _instance;
+  
+  static Database? _database;
+  
+  DatabaseHelper._internal();
+  
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDatabase();
+    return _database!;
+  }
+  
+  Future<Database> _initDatabase() async {
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    final path = join(documentsDirectory.path, 'paperlink.db');
+    
+    return await openDatabase(
+      path,
+      version: 2,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
+  }
+  
+  Future<void> _onCreate(Database db, int version) async {
+    // Users table
+    await db.execute('''
+      CREATE TABLE users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        fullName TEXT NOT NULL,
+        studentId TEXT UNIQUE NOT NULL,
+        phoneNumber TEXT,
+        profilePicture TEXT,
+        createdAt TEXT NOT NULL,
+        isLoggedIn INTEGER DEFAULT 0
+      )
+    ''');
+    
+    // User papers table
+    await db.execute('''
+      CREATE TABLE user_papers(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId INTEGER NOT NULL,
+        paperId TEXT NOT NULL,
+        title TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        status TEXT NOT NULL,
+        filePath TEXT,
+        fileType TEXT,
+        uploadedAt TEXT NOT NULL,
+        FOREIGN KEY (userId) REFERENCES users (id) ON DELETE CASCADE
+      )
+    ''');
+    
+    // Create indexes
+    await db.execute('CREATE INDEX idx_user_id ON user_papers(userId)');
+    await db.execute('CREATE INDEX idx_email ON users(email)');
+    await db.execute('CREATE INDEX idx_student_id ON users(studentId)');
+  }
+  
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS user_papers(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          userId INTEGER NOT NULL,
+          paperId TEXT NOT NULL,
+          title TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          status TEXT NOT NULL,
+          filePath TEXT,
+          fileType TEXT,
+          uploadedAt TEXT NOT NULL,
+          FOREIGN KEY (userId) REFERENCES users (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+  }
+  
+  // User operations
+  Future<int> insertUser(Map<String, dynamic> user) async {
+    final db = await database;
+    return await db.insert('users', user);
+  }
+  
+  Future<Map<String, dynamic>?> getUserByEmail(String email) async {
+    final db = await database;
+    final List<Map<String, dynamic>> results = await db.query(
+      'users',
+      where: 'email = ?',
+      whereArgs: [email],
+    );
+    return results.isNotEmpty ? results.first : null;
+  }
+  
+  Future<Map<String, dynamic>?> getUserByStudentId(String studentId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> results = await db.query(
+      'users',
+      where: 'studentId = ?',
+      whereArgs: [studentId],
+    );
+    return results.isNotEmpty ? results.first : null;
+  }
+  
+  Future<Map<String, dynamic>?> getLoggedInUser() async {
+    final db = await database;
+    final List<Map<String, dynamic>> results = await db.query(
+      'users',
+      where: 'isLoggedIn = ?',
+      whereArgs: [1],
+    );
+    return results.isNotEmpty ? results.first : null;
+  }
+  
+  Future<void> updateUserLoginStatus(int userId, bool isLoggedIn) async {
+    final db = await database;
+    await db.update(
+      'users',
+      {'isLoggedIn': isLoggedIn ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [userId],
+    );
+  }
+  
+  Future<void> updateUserProfile(int userId, Map<String, dynamic> updates) async {
+    final db = await database;
+    await db.update(
+      'users',
+      updates,
+      where: 'id = ?',
+      whereArgs: [userId],
+    );
+  }
+  
+  Future<void> logoutAllUsers() async {
+    final db = await database;
+    await db.update('users', {'isLoggedIn': 0});
+  }
+  
+  // Paper operations
+  Future<int> insertUserPaper(Map<String, dynamic> paper) async {
+    final db = await database;
+    return await db.insert('user_papers', paper);
+  }
+  
+  Future<List<Map<String, dynamic>>> getUserPapers(int userId) async {
+    final db = await database;
+    return await db.query(
+      'user_papers',
+      where: 'userId = ?',
+      whereArgs: [userId],
+      orderBy: 'uploadedAt DESC',
+    );
+  }
+  
+  Future<void> deleteUserPaper(int paperId) async {
+    final db = await database;
+    await db.delete(
+      'user_papers',
+      where: 'id = ?',
+      whereArgs: [paperId],
+    );
+  }
+  
+  Future<void> close() async {
+    final db = await database;
+    await db.close();
+  }
+}
+
+// ==============================================
+// AUTHENTICATION MANAGER
+// ==============================================
+
+class AuthManager {
+  static final AuthManager _instance = AuthManager._internal();
+  factory AuthManager() => _instance;
+  
+  final DatabaseHelper _dbHelper = DatabaseHelper();
+  Map<String, dynamic>? _currentUser;
+  
+  AuthManager._internal();
+  
+  // Hash password using SHA-256
+  String _hashPassword(String password) {
+    final bytes = utf8.encode(password);
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
+  
+  // Register new user
+  Future<Map<String, dynamic>> registerUser({
+    required String email,
+    required String password,
+    required String fullName,
+    required String studentId,
+    String? phoneNumber,
+    String? profilePicturePath,
+  }) async {
+    // Check if email already exists
+    final existingUser = await _dbHelper.getUserByEmail(email);
+    if (existingUser != null) {
+      throw Exception('Email already registered');
+    }
+    
+    // Check if student ID already exists
+    final existingStudent = await _dbHelper.getUserByStudentId(studentId);
+    if (existingStudent != null) {
+      throw Exception('Student ID already registered');
+    }
+    
+    // Create new user
+    final newUser = {
+      'email': email,
+      'password': _hashPassword(password),
+      'fullName': fullName,
+      'studentId': studentId,
+      'phoneNumber': phoneNumber ?? '',
+      'profilePicture': profilePicturePath ?? '',
+      'createdAt': DateTime.now().toIso8601String(),
+      'isLoggedIn': 0,
+    };
+    
+    final userId = await _dbHelper.insertUser(newUser);
+    newUser['id'] = userId;
+    
+    return newUser;
+  }
+  
+  // Login user
+  Future<Map<String, dynamic>> loginUser({
+    required String email,
+    required String password,
+  }) async {
+    final user = await _dbHelper.getUserByEmail(email);
+    
+    if (user == null) {
+      throw Exception('User not found');
+    }
+    
+    final hashedPassword = _hashPassword(password);
+    if (user['password'] != hashedPassword) {
+      throw Exception('Invalid password');
+    }
+    
+    // Logout all users first
+    await _dbHelper.logoutAllUsers();
+    
+    // Set current user as logged in
+    await _dbHelper.updateUserLoginStatus(user['id'], true);
+    
+    _currentUser = user;
+    return user;
+  }
+  
+  // Get current user
+  Future<Map<String, dynamic>?> getCurrentUser() async {
+    if (_currentUser != null) return _currentUser;
+    
+    _currentUser = await _dbHelper.getLoggedInUser();
+    return _currentUser;
+  }
+  
+  // Logout user
+  Future<void> logout() async {
+    if (_currentUser != null) {
+      await _dbHelper.updateUserLoginStatus(_currentUser!['id'], false);
+    }
+    _currentUser = null;
+  }
+  
+  // Update user profile
+  Future<void> updateProfile({
+    required int userId,
+    String? fullName,
+    String? phoneNumber,
+    String? profilePicturePath,
+  }) async {
+    final updates = <String, dynamic>{};
+    
+    if (fullName != null) updates['fullName'] = fullName;
+    if (phoneNumber != null) updates['phoneNumber'] = phoneNumber;
+    if (profilePicturePath != null) updates['profilePicture'] = profilePicturePath;
+    
+    if (updates.isNotEmpty) {
+      await _dbHelper.updateUserProfile(userId, updates);
+      
+      // Update current user in memory
+      if (_currentUser != null && _currentUser!['id'] == userId) {
+        _currentUser = {..._currentUser!, ...updates};
+      }
+    }
+  }
+  
+  // Check if user is logged in
+  Future<bool> isLoggedIn() async {
+    final user = await getCurrentUser();
+    return user != null;
+  }
+}
+
+// ==============================================
+// FILE STORAGE HELPER
+// ==============================================
+
+class FileStorageHelper {
+  static Future<String> getProfilePicturesDirectory() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final profilePicsDir = Directory('${appDir.path}/profile_pictures');
+    
+    if (!await profilePicsDir.exists()) {
+      await profilePicsDir.create(recursive: true);
+    }
+    
+    return profilePicsDir.path;
+  }
+  
+  static Future<String> saveProfilePicture(File imageFile, String userId) async {
+    final dir = await getProfilePicturesDirectory();
+    final extension = path_lib.extension(imageFile.path);
+    final newPath = '$dir/profile_$userId$extension';
+    
+    await imageFile.copy(newPath);
+    return newPath;
+  }
+  
+  static Future<void> deleteProfilePicture(String path) async {
+    final file = File(path);
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
+}
+
+// ==============================================
+// MAIN APP
+// ==============================================
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
+  
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
+  
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarBrightness: Brightness.dark,
       statusBarIconBrightness: Brightness.dark,
     ),
   );
+  
+  // Initialize database
+  await DatabaseHelper().database;
+  
   runApp(const PaperLinkApp());
 }
 
@@ -47,7 +407,10 @@ class PaperLinkApp extends StatelessWidget {
   }
 }
 
-// 🔥 SPLASH SCREEN
+// ==============================================
+// SPLASH SCREEN
+// ==============================================
+
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -60,6 +423,7 @@ class _SplashScreenState extends State<SplashScreen>
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<double> _scaleAnimation;
+  final AuthManager _authManager = AuthManager();
 
   @override
   void initState() {
@@ -86,19 +450,27 @@ class _SplashScreenState extends State<SplashScreen>
 
     _animationController.forward();
 
-    // Navigate to WelcomePage after 3 seconds
-    Future.delayed(const Duration(seconds: 3), () {
-      Navigator.pushReplacement(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const WelcomePage(),
-          transitionsBuilder: (_, animation, __, child) {
-            return FadeTransition(opacity: animation, child: child);
-          },
-          transitionDuration: const Duration(milliseconds: 500),
-        ),
-      );
-    });
+    // Check if user is logged in
+    _checkLoginStatus();
+  }
+
+  Future<void> _checkLoginStatus() async {
+    await Future.delayed(const Duration(seconds: 2));
+    
+    final isLoggedIn = await _authManager.isLoggedIn();
+    
+    Navigator.pushReplacement(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => isLoggedIn 
+            ? const StudentHomePage()
+            : const WelcomePage(),
+        transitionsBuilder: (_, animation, __, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 500),
+      ),
+    );
   }
 
   @override
@@ -199,194 +571,9 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
-// 🔥 MESSAGING SYSTEM
-class Message {
-  final String id;
-  final String senderId;
-  final String senderName;
-  final String receiverId;
-  final String text;
-  final DateTime timestamp;
-  final bool isRead;
-
-  Message({
-    required this.id,
-    required this.senderId,
-    required this.senderName,
-    required this.receiverId,
-    required this.text,
-    required this.timestamp,
-    this.isRead = false,
-  });
-
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'senderId': senderId,
-      'senderName': senderName,
-      'receiverId': receiverId,
-      'text': text,
-      'timestamp': timestamp.toIso8601String(),
-      'isRead': isRead,
-    };
-  }
-
-  factory Message.fromMap(Map<String, dynamic> map) {
-    return Message(
-      id: map['id'],
-      senderId: map['senderId'],
-      senderName: map['senderName'],
-      receiverId: map['receiverId'],
-      text: map['text'],
-      timestamp: DateTime.parse(map['timestamp']),
-      isRead: map['isRead'] ?? false,
-    );
-  }
-}
-
-class MessageManager {
-  static final MessageManager _instance = MessageManager._internal();
-
-  factory MessageManager() {
-    return _instance;
-  }
-
-  MessageManager._internal();
-
-  // Store messages between admin and students
-  List<Message> _messages = [
-    Message(
-      id: '1',
-      senderId: 'STU001',
-      senderName: 'Student',
-      receiverId: 'ADMIN',
-      text: 'Hello Admin, when will my paper be reviewed?',
-      timestamp: DateTime.now().subtract(const Duration(hours: 2)),
-      isRead: true,
-    ),
-    Message(
-      id: '2',
-      senderId: 'ADMIN',
-      senderName: 'Admin Fahdil',
-      receiverId: 'STU001',
-      text: 'Your paper is in the queue, will be reviewed within 24 hours.',
-      timestamp: DateTime.now().subtract(const Duration(hours: 1, minutes: 55)),
-      isRead: true,
-    ),
-    Message(
-      id: '3',
-      senderId: 'STU001',
-      senderName: 'Student',
-      receiverId: 'ADMIN',
-      text: 'Thank you!',
-      timestamp: DateTime.now().subtract(const Duration(hours: 1, minutes: 50)),
-      isRead: true,
-    ),
-    Message(
-      id: '4',
-      senderId: 'STU2024001',
-      senderName: 'John Doe',
-      receiverId: 'ADMIN',
-      text: 'Can I submit a revised version of my paper?',
-      timestamp: DateTime.now().subtract(const Duration(days: 1)),
-      isRead: true,
-    ),
-    Message(
-      id: '5',
-      senderId: 'ADMIN',
-      senderName: 'Admin Fahdil',
-      receiverId: 'STU2024001',
-      text: 'Yes, you can submit a revised version anytime.',
-      timestamp: DateTime.now().subtract(const Duration(hours: 23)),
-      isRead: true,
-    ),
-  ];
-
-  // Add a new message
-  void addMessage(Message message) {
-    _messages.add(message);
-  }
-
-  // Get messages between two users
-  List<Message> getMessagesBetween(String user1Id, String user2Id) {
-    return _messages
-        .where(
-          (message) =>
-              (message.senderId == user1Id && message.receiverId == user2Id) ||
-              (message.senderId == user2Id && message.receiverId == user1Id),
-        )
-        .toList()
-      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-  }
-
-  // Get conversations for a user
-  List<Map<String, dynamic>> getConversations(String userId) {
-    final Map<String, Map<String, dynamic>> conversations = {};
-
-    for (var message in _messages) {
-      final otherUserId = message.senderId == userId
-          ? message.receiverId
-          : message.senderId;
-      final otherUserName = message.senderId == userId
-          ? message.receiverId
-          : message.senderName;
-
-      if (!conversations.containsKey(otherUserId)) {
-        conversations[otherUserId] = {
-          'userId': otherUserId,
-          'userName': otherUserName,
-          'lastMessage': message.text,
-          'timestamp': message.timestamp,
-          'unreadCount': 0,
-        };
-      }
-
-      // Update last message if newer
-      if (message.timestamp.compareTo(
-            conversations[otherUserId]!['timestamp'],
-          ) >
-          0) {
-        conversations[otherUserId]!['lastMessage'] = message.text;
-        conversations[otherUserId]!['timestamp'] = message.timestamp;
-      }
-
-      // Count unread messages
-      if (!message.isRead && message.receiverId == userId) {
-        conversations[otherUserId]!['unreadCount'] =
-            (conversations[otherUserId]!['unreadCount'] as int) + 1;
-      }
-    }
-
-    return conversations.values.toList()
-      ..sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
-  }
-
-  // 🔥 FIXED: Mark messages as read
-  void markMessagesAsRead(String userId, String otherUserId) {
-    for (var i = 0; i < _messages.length; i++) {
-      if (_messages[i].senderId == otherUserId &&
-          _messages[i].receiverId == userId &&
-          !_messages[i].isRead) {
-        _messages[i] = Message(
-          id: _messages[i].id,
-          senderId: _messages[i].senderId,
-          senderName: _messages[i].senderName,
-          receiverId: _messages[i].receiverId,
-          text: _messages[i].text,
-          timestamp: _messages[i].timestamp,
-          isRead: true,
-        );
-      }
-    }
-  }
-
-  // Get unread message count for a user
-  int getUnreadMessageCount(String userId) {
-    return _messages
-        .where((message) => message.receiverId == userId && !message.isRead)
-        .length;
-  }
-}
+// ==============================================
+// WELCOME PAGE
+// ==============================================
 
 class WelcomePage extends StatelessWidget {
   const WelcomePage({super.key});
@@ -464,7 +651,7 @@ class WelcomePage extends StatelessWidget {
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 300),
                   child: ElevatedButton(
-                    onPressed: () => _navigateToStudent(context),
+                    onPressed: () => _navigateToStudentAuth(context),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white,
                       foregroundColor: Colors.blue[800],
@@ -521,11 +708,11 @@ class WelcomePage extends StatelessWidget {
     );
   }
 
-  void _navigateToStudent(BuildContext context) {
+  void _navigateToStudentAuth(BuildContext context) {
     Navigator.pushReplacement(
       context,
       PageRouteBuilder(
-        pageBuilder: (_, __, ___) => const StudentHomePage(),
+        pageBuilder: (_, __, ___) => const StudentAuthPage(),
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
         },
@@ -534,6 +721,1173 @@ class WelcomePage extends StatelessWidget {
     );
   }
 }
+
+// ==============================================
+// STUDENT AUTHENTICATION PAGE (REGISTER/LOGIN)
+// ==============================================
+
+class StudentAuthPage extends StatefulWidget {
+  const StudentAuthPage({super.key});
+
+  @override
+  State<StudentAuthPage> createState() => _StudentAuthPageState();
+}
+
+class _StudentAuthPageState extends State<StudentAuthPage> {
+  final AuthManager _authManager = AuthManager();
+  final PageController _pageController = PageController();
+  int _currentPage = 0;
+  
+  // Login controllers
+  final TextEditingController _loginEmailController = TextEditingController();
+  final TextEditingController _loginPasswordController = TextEditingController();
+  final ValueNotifier<bool> _loginPasswordVisible = ValueNotifier(false);
+  final ValueNotifier<bool> _loginLoading = ValueNotifier(false);
+  
+  // Register controllers
+  final TextEditingController _registerEmailController = TextEditingController();
+  final TextEditingController _registerPasswordController = TextEditingController();
+  final TextEditingController _registerConfirmPasswordController = TextEditingController();
+  final TextEditingController _registerFullNameController = TextEditingController();
+  final TextEditingController _registerStudentIdController = TextEditingController();
+  final TextEditingController _registerPhoneController = TextEditingController();
+  final ValueNotifier<bool> _registerPasswordVisible = ValueNotifier(false);
+  final ValueNotifier<bool> _registerConfirmPasswordVisible = ValueNotifier(false);
+  final ValueNotifier<bool> _registerLoading = ValueNotifier(false);
+  
+  // Profile picture
+  File? _profilePicture;
+  final ImagePicker _picker = ImagePicker();
+  
+  @override
+  void dispose() {
+    _pageController.dispose();
+    _loginEmailController.dispose();
+    _loginPasswordController.dispose();
+    _loginPasswordVisible.dispose();
+    _loginLoading.dispose();
+    _registerEmailController.dispose();
+    _registerPasswordController.dispose();
+    _registerConfirmPasswordController.dispose();
+    _registerFullNameController.dispose();
+    _registerStudentIdController.dispose();
+    _registerPhoneController.dispose();
+    _registerPasswordVisible.dispose();
+    _registerConfirmPasswordVisible.dispose();
+    _registerLoading.dispose();
+    super.dispose();
+  }
+  
+  Future<void> _pickProfilePicture() async {
+    final XFile? file = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+    );
+    
+    if (file != null) {
+      setState(() {
+        _profilePicture = File(file.path);
+      });
+    }
+  }
+  
+  Future<void> _takeProfilePicture() async {
+    final XFile? file = await _picker.pickImage(
+      source: ImageSource.camera,
+      imageQuality: 85,
+    );
+    
+    if (file != null) {
+      setState(() {
+        _profilePicture = File(file.path);
+      });
+    }
+  }
+  
+  Future<void> _login() async {
+    final email = _loginEmailController.text.trim();
+    final password = _loginPasswordController.text.trim();
+    
+    if (email.isEmpty || password.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please fill in all fields'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    _loginLoading.value = true;
+    
+    try {
+      await _authManager.loginUser(email: email, password: password);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Login successful!'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.green,
+        ),
+      );
+      
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const StudentHomePage()),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Login failed: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      _loginLoading.value = false;
+    }
+  }
+  
+  Future<void> _register() async {
+    final email = _registerEmailController.text.trim();
+    final password = _registerPasswordController.text.trim();
+    final confirmPassword = _registerConfirmPasswordController.text.trim();
+    final fullName = _registerFullNameController.text.trim();
+    final studentId = _registerStudentIdController.text.trim();
+    final phone = _registerPhoneController.text.trim();
+    
+    // Validation
+    if (email.isEmpty || password.isEmpty || confirmPassword.isEmpty || 
+        fullName.isEmpty || studentId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please fill in all required fields'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid email address'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    if (password.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Password must be at least 6 characters'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    if (password != confirmPassword) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Passwords do not match'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    _registerLoading.value = true;
+    
+    try {
+      String? profilePicturePath;
+      if (_profilePicture != null) {
+        profilePicturePath = await FileStorageHelper.saveProfilePicture(
+          _profilePicture!,
+          studentId,
+        );
+      }
+      
+      await _authManager.registerUser(
+        email: email,
+        password: password,
+        fullName: fullName,
+        studentId: studentId,
+        phoneNumber: phone.isNotEmpty ? phone : null,
+        profilePicturePath: profilePicturePath,
+      );
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Registration successful! Please login'),
+          duration: Duration(seconds: 3),
+          backgroundColor: Colors.green,
+        ),
+      );
+      
+      // Switch to login page
+      _pageController.animateToPage(
+        0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+      setState(() {
+        _currentPage = 0;
+      });
+      
+      // Clear form
+      _registerEmailController.clear();
+      _registerPasswordController.clear();
+      _registerConfirmPasswordController.clear();
+      _registerFullNameController.clear();
+      _registerStudentIdController.clear();
+      _registerPhoneController.clear();
+      _profilePicture = null;
+      
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Registration failed: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      _registerLoading.value = false;
+    }
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const WelcomePage()),
+          ),
+        ),
+        title: const Text('Student Authentication'),
+      ),
+      body: PageView(
+        controller: _pageController,
+        onPageChanged: (page) {
+          setState(() {
+            _currentPage = page;
+          });
+        },
+        children: [
+          // Login Page
+          _buildLoginPage(),
+          
+          // Register Page
+          _buildRegisterPage(),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentPage,
+        onTap: (index) {
+          _pageController.animateToPage(
+            index,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        },
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.login),
+            label: 'Login',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_add),
+            label: 'Register',
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildLoginPage() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 20),
+          const Center(
+            child: Icon(
+              Icons.school,
+              size: 80,
+              color: Colors.blue,
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Center(
+            child: Text(
+              'Student Login',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Center(
+            child: Text(
+              'Login to access your papers and exercises',
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+          ),
+          const SizedBox(height: 40),
+          
+          TextFormField(
+            controller: _loginEmailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+              labelText: 'Email',
+              prefixIcon: const Icon(Icons.email),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          ValueListenableBuilder<bool>(
+            valueListenable: _loginPasswordVisible,
+            builder: (context, isVisible, child) {
+              return TextFormField(
+                controller: _loginPasswordController,
+                obscureText: !isVisible,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      isVisible ? Icons.visibility : Icons.visibility_off,
+                    ),
+                    onPressed: () {
+                      _loginPasswordVisible.value = !_loginPasswordVisible.value;
+                    },
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              );
+            },
+          ),
+          
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () {
+                // TODO: Implement forgot password
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Forgot password feature coming soon'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+              child: const Text('Forgot Password?'),
+            ),
+          ),
+          
+          const SizedBox(height: 30),
+          
+          ValueListenableBuilder<bool>(
+            valueListenable: _loginLoading,
+            builder: (context, isLoading, child) {
+              return SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: isLoading ? null : _login,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'Login',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              );
+            },
+          ),
+          
+          const SizedBox(height: 20),
+          const Divider(),
+          const SizedBox(height: 20),
+          
+          Center(
+            child: TextButton(
+              onPressed: () {
+                _pageController.animateToPage(
+                  1,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                );
+              },
+              child: const Text('Don\'t have an account? Register here'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildRegisterPage() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 20),
+          const Center(
+            child: Icon(
+              Icons.person_add,
+              size: 80,
+              color: Colors.blue,
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Center(
+            child: Text(
+              'Student Registration',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Center(
+            child: Text(
+              'Create your account to start using PaperLink',
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+          ),
+          const SizedBox(height: 40),
+          
+          // Profile Picture Section
+          Center(
+            child: Column(
+              children: [
+                Stack(
+                  children: [
+                    CircleAvatar(
+                      radius: 60,
+                      backgroundColor: Colors.grey[200],
+                      backgroundImage: _profilePicture != null
+                          ? FileImage(_profilePicture!)
+                          : null,
+                      child: _profilePicture == null
+                          ? const Icon(
+                              Icons.person,
+                              size: 50,
+                              color: Colors.grey,
+                            )
+                          : null,
+                    ),
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.blue,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
+                          onPressed: () {
+                            showModalBottomSheet(
+                              context: context,
+                              shape: const RoundedRectangleBorder(
+                                borderRadius: BorderRadius.vertical(
+                                  top: Radius.circular(20),
+                                ),
+                              ),
+                              builder: (context) {
+                                return Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    ListTile(
+                                      leading: const Icon(Icons.photo_library),
+                                      title: const Text('Choose from Gallery'),
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        _pickProfilePicture();
+                                      },
+                                    ),
+                                    ListTile(
+                                      leading: const Icon(Icons.camera_alt),
+                                      title: const Text('Take Photo'),
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        _takeProfilePicture();
+                                      },
+                                    ),
+                                    if (_profilePicture != null)
+                                      ListTile(
+                                        leading: const Icon(Icons.delete, color: Colors.red),
+                                        title: const Text('Remove Photo', style: TextStyle(color: Colors.red)),
+                                        onTap: () {
+                                          Navigator.pop(context);
+                                          setState(() {
+                                            _profilePicture = null;
+                                          });
+                                        },
+                                      ),
+                                  ],
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Profile Picture (Optional)',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+          
+          const SizedBox(height: 30),
+          
+          TextFormField(
+            controller: _registerFullNameController,
+            decoration: InputDecoration(
+              labelText: 'Full Name *',
+              prefixIcon: const Icon(Icons.person),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          TextFormField(
+            controller: _registerStudentIdController,
+            decoration: InputDecoration(
+              labelText: 'Student ID *',
+              prefixIcon: const Icon(Icons.badge),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          TextFormField(
+            controller: _registerEmailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+              labelText: 'Email *',
+              prefixIcon: const Icon(Icons.email),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          ValueListenableBuilder<bool>(
+            valueListenable: _registerPasswordVisible,
+            builder: (context, isVisible, child) {
+              return TextFormField(
+                controller: _registerPasswordController,
+                obscureText: !isVisible,
+                decoration: InputDecoration(
+                  labelText: 'Password *',
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      isVisible ? Icons.visibility : Icons.visibility_off,
+                    ),
+                    onPressed: () {
+                      _registerPasswordVisible.value = !_registerPasswordVisible.value;
+                    },
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 20),
+          
+          ValueListenableBuilder<bool>(
+            valueListenable: _registerConfirmPasswordVisible,
+            builder: (context, isVisible, child) {
+              return TextFormField(
+                controller: _registerConfirmPasswordController,
+                obscureText: !isVisible,
+                decoration: InputDecoration(
+                  labelText: 'Confirm Password *',
+                  prefixIcon: const Icon(Icons.lock),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      isVisible ? Icons.visibility : Icons.visibility_off,
+                    ),
+                    onPressed: () {
+                      _registerConfirmPasswordVisible.value = !_registerConfirmPasswordVisible.value;
+                    },
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 20),
+          
+          TextFormField(
+            controller: _registerPhoneController,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              labelText: 'Phone Number (Optional)',
+              prefixIcon: const Icon(Icons.phone),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 30),
+          
+          ValueListenableBuilder<bool>(
+            valueListenable: _registerLoading,
+            builder: (context, isLoading, child) {
+              return SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: isLoading ? null : _register,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'Register',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              );
+            },
+          ),
+          
+          const SizedBox(height: 20),
+          const Divider(),
+          const SizedBox(height: 20),
+          
+          Center(
+            child: TextButton(
+              onPressed: () {
+                _pageController.animateToPage(
+                  0,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                );
+              },
+              child: const Text('Already have an account? Login here'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==============================================
+// STUDENT PROFILE PAGE
+// ==============================================
+
+class StudentProfilePage extends StatefulWidget {
+  const StudentProfilePage({super.key});
+
+  @override
+  State<StudentProfilePage> createState() => _StudentProfilePageState();
+}
+
+class _StudentProfilePageState extends State<StudentProfilePage> {
+  final AuthManager _authManager = AuthManager();
+  final DatabaseHelper _dbHelper = DatabaseHelper();
+  Map<String, dynamic>? _user;
+  List<Map<String, dynamic>> _userPapers = [];
+  bool _isLoading = true;
+  
+  // Profile editing
+  final TextEditingController _fullNameController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  File? _newProfilePicture;
+  final ImagePicker _picker = ImagePicker();
+  bool _isEditing = false;
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
+  
+  Future<void> _loadUserData() async {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      _user = await _authManager.getCurrentUser();
+      if (_user != null) {
+        _fullNameController.text = _user!['fullName'];
+        _phoneController.text = _user!['phoneNumber'] ?? '';
+        
+        // Load user papers
+        _userPapers = await _dbHelper.getUserPapers(_user!['id']);
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error loading profile: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+  
+  Future<void> _pickNewProfilePicture() async {
+    final XFile? file = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+    );
+    
+    if (file != null) {
+      setState(() {
+        _newProfilePicture = File(file.path);
+      });
+    }
+  }
+  
+  Future<void> _takeNewProfilePicture() async {
+    final XFile? file = await _picker.pickImage(
+      source: ImageSource.camera,
+      imageQuality: 85,
+    );
+    
+    if (file != null) {
+      setState(() {
+        _newProfilePicture = File(file.path);
+      });
+    }
+  }
+  
+  Future<void> _saveProfileChanges() async {
+    if (_user == null) return;
+    
+    try {
+      String? profilePicturePath;
+      
+      // Save new profile picture if selected
+      if (_newProfilePicture != null) {
+        // Delete old profile picture if exists
+        if (_user!['profilePicture'] != null && _user!['profilePicture'].isNotEmpty) {
+          await FileStorageHelper.deleteProfilePicture(_user!['profilePicture']);
+        }
+        
+        profilePicturePath = await FileStorageHelper.saveProfilePicture(
+          _newProfilePicture!,
+          _user!['studentId'],
+        );
+      }
+      
+      await _authManager.updateProfile(
+        userId: _user!['id'],
+        fullName: _fullNameController.text.trim(),
+        phoneNumber: _phoneController.text.trim(),
+        profilePicturePath: profilePicturePath,
+      );
+      
+      // Reload user data
+      await _loadUserData();
+      
+      setState(() {
+        _isEditing = false;
+        _newProfilePicture = null;
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Profile updated successfully!'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error updating profile: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  Future<void> _logout() async {
+    try {
+      await _authManager.logout();
+      
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const WelcomePage()),
+        (route) => false,
+      );
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Logged out successfully'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error logging out: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    
+    if (_user == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Profile'),
+        ),
+        body: const Center(
+          child: Text('User not found. Please login again.'),
+        ),
+      );
+    }
+    
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('My Profile'),
+        actions: [
+          if (!_isEditing)
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () {
+                setState(() {
+                  _isEditing = true;
+                });
+              },
+            ),
+          if (_isEditing)
+            IconButton(
+              icon: const Icon(Icons.save),
+              onPressed: _saveProfileChanges,
+            ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            // Profile Picture
+            Stack(
+              children: [
+                CircleAvatar(
+                  radius: 70,
+                  backgroundColor: Colors.grey[200],
+                  backgroundImage: _newProfilePicture != null
+                      ? FileImage(_newProfilePicture!)
+                      : (_user!['profilePicture'] != null && _user!['profilePicture'].isNotEmpty)
+                          ? FileImage(File(_user!['profilePicture']))
+                          : null,
+                  child: (_newProfilePicture == null && 
+                         (_user!['profilePicture'] == null || _user!['profilePicture'].isEmpty))
+                      ? const Icon(
+                          Icons.person,
+                          size: 60,
+                          color: Colors.grey,
+                        )
+                      : null,
+                ),
+                if (_isEditing)
+                  Positioned(
+                    bottom: 0,
+                    right: 0,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.blue,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 3),
+                      ),
+                      child: IconButton(
+                        icon: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
+                        onPressed: () {
+                          showModalBottomSheet(
+                            context: context,
+                            shape: const RoundedRectangleBorder(
+                              borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(20),
+                              ),
+                            ),
+                            builder: (context) {
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  ListTile(
+                                    leading: const Icon(Icons.photo_library),
+                                    title: const Text('Choose from Gallery'),
+                                    onTap: () {
+                                      Navigator.pop(context);
+                                      _pickNewProfilePicture();
+                                    },
+                                  ),
+                                  ListTile(
+                                    leading: const Icon(Icons.camera_alt),
+                                    title: const Text('Take Photo'),
+                                    onTap: () {
+                                      Navigator.pop(context);
+                                      _takeNewProfilePicture();
+                                    },
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // User Info
+            if (!_isEditing)
+              Column(
+                children: [
+                  Text(
+                    _user!['fullName'],
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _user!['email'],
+                    style: const TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    'Student ID: ${_user!['studentId']}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey,
+                    ),
+                  ),
+                  if (_user!['phoneNumber'] != null && _user!['phoneNumber'].isNotEmpty)
+                    Text(
+                      'Phone: ${_user!['phoneNumber']}',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Member since: ${DateTime.parse(_user!['createdAt']).toLocal().toString().split(' ')[0]}',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey,
+                    ),
+                  ),
+                ],
+              )
+            else
+              Column(
+                children: [
+                  TextFormField(
+                    controller: _fullNameController,
+                    decoration: InputDecoration(
+                      labelText: 'Full Name',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  TextFormField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    decoration: InputDecoration(
+                      labelText: 'Phone Number',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            
+            const SizedBox(height: 30),
+            const Divider(),
+            const SizedBox(height: 20),
+            
+            // My Papers Section
+            const Text(
+              'My Papers',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            
+            _userPapers.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text(
+                      'No papers submitted yet',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  )
+                : Column(
+                    children: _userPapers.map((paper) {
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        child: ListTile(
+                          leading: Icon(
+                            paper['status'] == 'approved'
+                                ? Icons.check_circle
+                                : Icons.pending,
+                            color: paper['status'] == 'approved'
+                                ? Colors.green
+                                : Colors.orange,
+                          ),
+                          title: Text(paper['title']),
+                          subtitle: Text(
+                            '${paper['subject']} • ${paper['status']} • ${DateTime.parse(paper['uploadedAt']).toLocal().toString().split(' ')[0]}',
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (paper['filePath'] != null)
+                                IconButton(
+                                  icon: const Icon(Icons.visibility, size: 20),
+                                  onPressed: () {
+                                    // TODO: Implement file viewer
+                                  },
+                                ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                                onPressed: () async {
+                                  await _dbHelper.deleteUserPaper(paper['id']);
+                                  await _loadUserData();
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+            
+            const SizedBox(height: 30),
+            
+            // Logout Button
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed: _logout,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text(
+                  'Logout',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==============================================
+// ADMIN LOGIN PAGE
+// ==============================================
 
 class AdminLoginPage extends StatefulWidget {
   const AdminLoginPage({super.key});
@@ -692,7 +2046,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                   Navigator.pushReplacement(
                     context,
                     PageRouteBuilder(
-                      pageBuilder: (_, __, ___) => const StudentHomePage(),
+                      pageBuilder: (_, __, ___) => const StudentAuthPage(),
                       transitionsBuilder: (_, animation, __, child) {
                         return SlideTransition(
                           position: Tween<Offset>(
@@ -833,7 +2187,202 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
   }
 }
 
-// 🔥 FILE VIEWER WIDGETS
+// ==============================================
+// MESSAGING SYSTEM (FROM ORIGINAL CODE)
+// ==============================================
+
+class Message {
+  final String id;
+  final String senderId;
+  final String senderName;
+  final String receiverId;
+  final String text;
+  final DateTime timestamp;
+  final bool isRead;
+
+  Message({
+    required this.id,
+    required this.senderId,
+    required this.senderName,
+    required this.receiverId,
+    required this.text,
+    required this.timestamp,
+    this.isRead = false,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'senderId': senderId,
+      'senderName': senderName,
+      'receiverId': receiverId,
+      'text': text,
+      'timestamp': timestamp.toIso8601String(),
+      'isRead': isRead,
+    };
+  }
+
+  factory Message.fromMap(Map<String, dynamic> map) {
+    return Message(
+      id: map['id'],
+      senderId: map['senderId'],
+      senderName: map['senderName'],
+      receiverId: map['receiverId'],
+      text: map['text'],
+      timestamp: DateTime.parse(map['timestamp']),
+      isRead: map['isRead'] ?? false,
+    );
+  }
+}
+
+class MessageManager {
+  static final MessageManager _instance = MessageManager._internal();
+
+  factory MessageManager() {
+    return _instance;
+  }
+
+  MessageManager._internal();
+
+  // Store messages between admin and students
+  final List<Message> _messages = [
+    Message(
+      id: '1',
+      senderId: 'STU001',
+      senderName: 'Student',
+      receiverId: 'ADMIN',
+      text: 'Hello Admin, when will my paper be reviewed?',
+      timestamp: DateTime.now().subtract(const Duration(hours: 2)),
+      isRead: true,
+    ),
+    Message(
+      id: '2',
+      senderId: 'ADMIN',
+      senderName: 'Admin Fahdil',
+      receiverId: 'STU001',
+      text: 'Your paper is in the queue, will be reviewed within 24 hours.',
+      timestamp: DateTime.now().subtract(const Duration(hours: 1, minutes: 55)),
+      isRead: true,
+    ),
+    Message(
+      id: '3',
+      senderId: 'STU001',
+      senderName: 'Student',
+      receiverId: 'ADMIN',
+      text: 'Thank you!',
+      timestamp: DateTime.now().subtract(const Duration(hours: 1, minutes: 50)),
+      isRead: true,
+    ),
+    Message(
+      id: '4',
+      senderId: 'STU2024001',
+      senderName: 'John Doe',
+      receiverId: 'ADMIN',
+      text: 'Can I submit a revised version of my paper?',
+      timestamp: DateTime.now().subtract(const Duration(days: 1)),
+      isRead: true,
+    ),
+    Message(
+      id: '5',
+      senderId: 'ADMIN',
+      senderName: 'Admin Fahdil',
+      receiverId: 'STU2024001',
+      text: 'Yes, you can submit a revised version anytime.',
+      timestamp: DateTime.now().subtract(const Duration(hours: 23)),
+      isRead: true,
+    ),
+  ];
+
+  // Add a new message
+  void addMessage(Message message) {
+    _messages.add(message);
+  }
+
+  // Get messages between two users
+  List<Message> getMessagesBetween(String user1Id, String user2Id) {
+    return _messages
+        .where(
+          (message) =>
+              (message.senderId == user1Id && message.receiverId == user2Id) ||
+              (message.senderId == user2Id && message.receiverId == user1Id),
+        )
+        .toList()
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+  }
+
+  // Get conversations for a user
+  List<Map<String, dynamic>> getConversations(String userId) {
+    final Map<String, Map<String, dynamic>> conversations = {};
+
+    for (var message in _messages) {
+      final otherUserId = message.senderId == userId
+          ? message.receiverId
+          : message.senderId;
+      final otherUserName = message.senderId == userId
+          ? message.receiverId
+          : message.senderName;
+
+      if (!conversations.containsKey(otherUserId)) {
+        conversations[otherUserId] = {
+          'userId': otherUserId,
+          'userName': otherUserName,
+          'lastMessage': message.text,
+          'timestamp': message.timestamp,
+          'unreadCount': 0,
+        };
+      }
+
+      // Update last message if newer
+      if (message.timestamp.compareTo(
+            conversations[otherUserId]!['timestamp'],
+          ) >
+          0) {
+        conversations[otherUserId]!['lastMessage'] = message.text;
+        conversations[otherUserId]!['timestamp'] = message.timestamp;
+      }
+
+      // Count unread messages
+      if (!message.isRead && message.receiverId == userId) {
+        conversations[otherUserId]!['unreadCount'] =
+            (conversations[otherUserId]!['unreadCount'] as int) + 1;
+      }
+    }
+
+    return conversations.values.toList()
+      ..sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
+  }
+
+  // Mark messages as read
+  void markMessagesAsRead(String userId, String otherUserId) {
+    for (var i = 0; i < _messages.length; i++) {
+      if (_messages[i].senderId == otherUserId &&
+          _messages[i].receiverId == userId &&
+          !_messages[i].isRead) {
+        _messages[i] = Message(
+          id: _messages[i].id,
+          senderId: _messages[i].senderId,
+          senderName: _messages[i].senderName,
+          receiverId: _messages[i].receiverId,
+          text: _messages[i].text,
+          timestamp: _messages[i].timestamp,
+          isRead: true,
+        );
+      }
+    }
+  }
+
+  // Get unread message count for a user
+  int getUnreadMessageCount(String userId) {
+    return _messages
+        .where((message) => message.receiverId == userId && !message.isRead)
+        .length;
+  }
+}
+
+// ==============================================
+// FILE VIEWER WIDGETS (FROM ORIGINAL CODE)
+// ==============================================
+
 class PDFViewerScreen extends StatefulWidget {
   final File pdfFile;
   final String fileName;
@@ -1029,7 +2578,10 @@ class ImageViewerScreen extends StatelessWidget {
   }
 }
 
-// 🔥 UPDATED STORAGE MANAGER FOR FILES (PDF & IMAGES)
+// ==============================================
+// UPDATED STORAGE MANAGER FOR FILES (FROM ORIGINAL)
+// ==============================================
+
 class FileStorageManager {
   static final FileStorageManager _instance = FileStorageManager._internal();
 
@@ -1040,9 +2592,9 @@ class FileStorageManager {
   FileStorageManager._internal();
 
   // Store files with their paper IDs
-  Map<String, File> _fileStorage = {};
-  Map<String, String> _filePaths = {};
-  Map<String, String> _fileTypes = {}; // Store file type (PDF, IMAGE, etc.)
+  final Map<String, File> _fileStorage = {};
+  final Map<String, String> _filePaths = {};
+  final Map<String, String> _fileTypes = {}; // Store file type (PDF, IMAGE, etc.)
 
   // Store file
   void storeFile(String paperId, File file, String fileType) {
@@ -1110,7 +2662,10 @@ class FileStorageManager {
   }
 }
 
-// 🔥 GLOBAL DATA MANAGEMENT
+// ==============================================
+// GLOBAL DATA MANAGEMENT (FROM ORIGINAL)
+// ==============================================
+
 class PaperDataManager {
   static final PaperDataManager _instance = PaperDataManager._internal();
 
@@ -1126,7 +2681,7 @@ class PaperDataManager {
   // Message manager
   final MessageManager messageManager = MessageManager();
 
-  // 🔥 SHARED PAPERS LIST - Both Admin and Student can access
+  // SHARED PAPERS LIST - Both Admin and Student can access
   List<Map<String, dynamic>> allPapers = [
     {
       'id': '1',
@@ -1201,7 +2756,7 @@ class PaperDataManager {
     },
   ];
 
-  // 🔥 NOTIFICATIONS FOR ADMIN
+  // NOTIFICATIONS FOR ADMIN
   List<Map<String, dynamic>> adminNotifications = [
     {
       'id': '1',
@@ -1212,7 +2767,7 @@ class PaperDataManager {
     },
   ];
 
-  // 🔥 Add new paper
+  // Add new paper
   void addPaper(Map<String, dynamic> paper, {File? file, String? fileType}) {
     allPapers.add(paper);
     if (file != null && fileType != null) {
@@ -1220,7 +2775,7 @@ class PaperDataManager {
     }
   }
 
-  // 🔥 Update paper status
+  // Update paper status
   void updatePaperStatus(
     String paperId,
     String status, {
@@ -1242,7 +2797,7 @@ class PaperDataManager {
     }
   }
 
-  // 🔥 Add notification for admin
+  // Add notification for admin
   void addNotification(String title, String message) {
     adminNotifications.insert(0, {
       'id': 'NT${DateTime.now().millisecondsSinceEpoch}',
@@ -1253,57 +2808,61 @@ class PaperDataManager {
     });
   }
 
-  // 🔥 Get pending papers
+  // Get pending papers
   List<Map<String, dynamic>> getPendingPapers() {
     return allPapers.where((paper) => paper['status'] == 'pending').toList();
   }
 
-  // 🔥 Get approved papers (public)
+  // Get approved papers (public)
   List<Map<String, dynamic>> getApprovedPapers() {
     return allPapers.where((paper) => paper['status'] == 'approved').toList();
   }
 
-  // 🔥 Get all public papers
+  // Get all public papers
   List<Map<String, dynamic>> getPublicPapers() {
     return allPapers.where((paper) => paper['isPublic'] == true).toList();
   }
 
-  // 🔥 Remove paper completely
+  // Remove paper completely
   void removePaper(String paperId) {
     allPapers.removeWhere((paper) => paper['id'] == paperId);
     fileStorage.removeFile(paperId);
   }
 
-  // 🔥 Get file for paper
+  // Get file for paper
   File? getPaperFile(String paperId) {
     return fileStorage.getFile(paperId);
   }
 
-  // 🔥 Get file type for paper
+  // Get file type for paper
   String? getPaperFileType(String paperId) {
     return fileStorage.getFileType(paperId);
   }
 
-  // 🔥 Check if paper has file
+  // Check if paper has file
   bool paperHasFile(String paperId) {
     return fileStorage.hasFile(paperId);
   }
 
-  // 🔥 Check if file is image
+  // Check if file is image
   bool isPaperFileImage(String paperId) {
     return fileStorage.isImageFile(paperId);
   }
 
-  // 🔥 Check if file is PDF
+  // Check if file is PDF
   bool isPaperFilePdf(String paperId) {
     return fileStorage.isPdfFile(paperId);
   }
 
-  // 🔥 Check if file is document
+  // Check if file is document
   bool isPaperFileDocument(String paperId) {
     return fileStorage.isDocumentFile(paperId);
   }
 }
+
+// ==============================================
+// ADMIN HOME PAGE (FROM ORIGINAL)
+// ==============================================
 
 class AdminHomePage extends StatefulWidget {
   const AdminHomePage({super.key});
@@ -1316,13 +2875,13 @@ class _AdminHomePageState extends State<AdminHomePage> {
   final PaperDataManager _dataManager = PaperDataManager();
   final MessageManager _messageManager = MessageManager();
 
-  // 🔥 UPDATED: FILE PICKER STATE FOR ADMIN (SUPPORTS PDF & IMAGES)
+  // UPDATED: FILE PICKER STATE FOR ADMIN (SUPPORTS PDF & IMAGES)
   File? _selectedAdminFile;
   String? _selectedFileType;
   String? _selectedFileExtension;
   final ImagePicker _picker = ImagePicker();
 
-  // 🔥 UPDATED: FUNCTION TO PICK FILE FOR ADMIN (SUPPORTS PDF & IMAGES)
+  // UPDATED: FUNCTION TO PICK FILE FOR ADMIN (SUPPORTS PDF & IMAGES)
   Future<void> _pickAdminFile() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -1338,7 +2897,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     }
   }
 
-  // 🔥 FUNCTION TO PICK IMAGE (CAMERA/GALLERY)
+  // FUNCTION TO PICK IMAGE (CAMERA/GALLERY)
   Future<void> _pickAdminImage(ImageSource source) async {
     final XFile? file = await _picker.pickImage(
       source: source,
@@ -1390,7 +2949,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     }
   }
 
-  // 🔥 OPEN FILE VIEWER
+  // OPEN FILE VIEWER
   void _openFileViewer(BuildContext context, String paperId) {
     final file = _dataManager.getPaperFile(paperId);
     final fileName = _dataManager.allPapers.firstWhere(
@@ -1459,7 +3018,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     });
   }
 
-  // 🔥 REMOVE PAPER COMPLETELY (EVEN IF APPROVED)
+  // REMOVE PAPER COMPLETELY (EVEN IF APPROVED)
   void _removePaper(String paperId) {
     setState(() {
       _dataManager.removePaper(paperId);
@@ -1503,7 +3062,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     });
   }
 
-  // 🔥 MARK NOTIFICATION AS READ
+  // MARK NOTIFICATION AS READ
   void _markNotificationAsRead(String notificationId) {
     setState(() {
       final index = _dataManager.adminNotifications.indexWhere(
@@ -1515,14 +3074,14 @@ class _AdminHomePageState extends State<AdminHomePage> {
     });
   }
 
-  // 🔥 GET UNREAD NOTIFICATIONS COUNT
+  // GET UNREAD NOTIFICATIONS COUNT
   int getUnreadNotificationsCount() {
     return _dataManager.adminNotifications
         .where((n) => n['read'] == false)
         .length;
   }
 
-  // 🔥 GET UNREAD MESSAGES COUNT
+  // GET UNREAD MESSAGES COUNT
   int getUnreadMessagesCount() {
     return _messageManager.getUnreadMessageCount('ADMIN');
   }
@@ -1538,7 +3097,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
       appBar: AppBar(
         title: const Text('Admin Management'),
         actions: [
-          // 🔥 MESSAGES ICON WITH BADGE
+          // MESSAGES ICON WITH BADGE
           Stack(
             children: [
               IconButton(
@@ -1573,7 +3132,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                 ),
             ],
           ),
-          // 🔥 NOTIFICATION BELL WITH BADGE
+          // NOTIFICATION BELL WITH BADGE
           Stack(
             children: [
               IconButton(
@@ -1797,7 +3356,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     );
   }
 
-  // 🔥 ADMIN MESSAGES SCREEN
+  // ADMIN MESSAGES SCREEN
   void _showAdminMessages(BuildContext context) {
     final conversations = _messageManager.getConversations('ADMIN');
 
@@ -2122,7 +3681,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     const SizedBox(height: 20),
                     const Text('Assign Grade:'),
                     DropdownButtonFormField<String>(
-                      value: selectedGrade,
+                      initialValue: selectedGrade,
                       items: const [
                         DropdownMenuItem(value: 'A', child: Text('A')),
                         DropdownMenuItem(value: 'B+', child: Text('B+')),
@@ -2182,18 +3741,18 @@ class _AdminHomePageState extends State<AdminHomePage> {
                         content: Text(
                           'Paper "${paper['title']}" approved with grade $selectedGrade',
                         ),
-                        duration: const Duration(seconds: 3),
+                        duration: Duration(seconds: 3),
                         backgroundColor: Colors.green,
                       ),
                     );
 
-                    // 🔥 ADD NOTIFICATION
+                    // ADD NOTIFICATION
                     _dataManager.addNotification(
                       'Paper Approved',
                       'You approved "${paper['title']}" with grade $selectedGrade',
                     );
 
-                    // 🔥 SEND MESSAGE TO STUDENT
+                    // SEND MESSAGE TO STUDENT
                     _messageManager.addMessage(
                       Message(
                         id: 'MSG${DateTime.now().millisecondsSinceEpoch}',
@@ -2267,18 +3826,18 @@ class _AdminHomePageState extends State<AdminHomePage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('Paper "${paper['title']}" rejected'),
-                    duration: const Duration(seconds: 3),
+                    duration: Duration(seconds: 3),
                     backgroundColor: Colors.red,
                   ),
                 );
 
-                // 🔥 ADD NOTIFICATION
+                // ADD NOTIFICATION
                 _dataManager.addNotification(
                   'Paper Rejected',
                   'You rejected "${paper['title']}"',
                 );
 
-                // 🔥 SEND MESSAGE TO STUDENT
+                // SEND MESSAGE TO STUDENT
                 _messageManager.addMessage(
                   Message(
                     id: 'MSG${DateTime.now().millisecondsSinceEpoch}',
@@ -2343,7 +3902,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
 
                   const SizedBox(height: 20),
 
-                  // 🔥 FILE PREVIEW SECTION
+                  // FILE PREVIEW SECTION
                   if (hasFile && file != null)
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2476,10 +4035,10 @@ class _AdminHomePageState extends State<AdminHomePage> {
                                     decoration: BoxDecoration(
                                       color: _getFileColor(
                                         fileType,
-                                      )!.withOpacity(0.1),
+                                      ).withOpacity(0.1),
                                       borderRadius: BorderRadius.circular(20),
                                       border: Border.all(
-                                        color: _getFileColor(fileType)!,
+                                        color: _getFileColor(fileType),
                                       ),
                                     ),
                                     child: Row(
@@ -2800,12 +4359,12 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     content: Text(
                       'Paper "${paper['title']}" deleted permanently',
                     ),
-                    duration: const Duration(seconds: 3),
+                    duration: Duration(seconds: 3),
                     backgroundColor: Colors.red,
                   ),
                 );
 
-                // 🔥 ADD NOTIFICATION
+                // ADD NOTIFICATION
                 _dataManager.addNotification(
                   'Paper Deleted',
                   'You deleted "${paper['title']}" from the system',
@@ -2867,7 +4426,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
 
                   const SizedBox(height: 20),
 
-                  // 🔥 FILE PREVIEW SECTION
+                  // FILE PREVIEW SECTION
                   if (hasFile && file != null)
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3001,7 +4560,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                                       vertical: 10,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: _getFileColor(fileType)!,
+                                      color: _getFileColor(fileType),
                                       borderRadius: BorderRadius.circular(25),
                                     ),
                                     child: const Row(
@@ -3150,7 +4709,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Downloading ${paper['title']}...'),
-        duration: const Duration(seconds: 2),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -3291,7 +4850,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     const SizedBox(height: 16),
                     const Text('Select subject:'),
                     DropdownButtonFormField<String>(
-                      value: selectedSubject,
+                      initialValue: selectedSubject,
                       items: const [
                         DropdownMenuItem(
                           value: 'Computer Science',
@@ -3349,7 +4908,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     ),
                     const SizedBox(height: 16),
 
-                    // 🔥 UPDATED: FILE PICKER SECTION FOR PDF & IMAGES
+                    // UPDATED: FILE PICKER SECTION FOR PDF & IMAGES
                     Container(
                       width: double.infinity,
                       height: 200,
@@ -3445,7 +5004,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     ),
                     const SizedBox(height: 12),
 
-                    // 🔥 UPDATED: FILE SELECTION BUTTONS
+                    // UPDATED: FILE SELECTION BUTTONS
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
@@ -3647,7 +5206,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     labelStyle: TextStyle(fontSize: 10, color: color),
                   ),
               ],
-            ),
+            ],
           ],
         ),
         trailing: Row(
@@ -3760,7 +5319,10 @@ class _AdminHomePageState extends State<AdminHomePage> {
   }
 }
 
-// 🔥 CHAT SCREEN FOR MESSAGING
+// ==============================================
+// CHAT SCREEN FOR MESSAGING (FROM ORIGINAL)
+// ==============================================
+
 class ChatScreen extends StatefulWidget {
   final String currentUserId;
   final String currentUserName;
@@ -3947,7 +5509,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: Colors.grey.shade300)),
+              border: Border.top: BorderSide(color: Colors.grey.shade300),
             ),
             child: Row(
               children: [
@@ -3984,6 +5546,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
+// ==============================================
+// STUDENT HOME PAGE (UPDATED WITH AUTH) - FIXED VERSION
+// ==============================================
+
 class StudentHomePage extends StatefulWidget {
   const StudentHomePage({super.key});
 
@@ -4011,17 +5577,21 @@ class _StudentHomePageState extends State<StudentHomePage> {
     },
   ];
 
-  // 🔥 UPDATED: FILE PICKER STATE FOR STUDENT (SUPPORTS PDF & IMAGES)
+  // UPDATED: FILE PICKER STATE FOR STUDENT (SUPPORTS PDF & IMAGES)
   File? _selectedStudentFile;
   String? _selectedFileType;
   String? _selectedFileExtension;
   final ImagePicker _studentPicker = ImagePicker();
 
-  // 🔥 DATA MANAGER
+  // DATA MANAGER
   final PaperDataManager _dataManager = PaperDataManager();
   final MessageManager _messageManager = MessageManager();
+  
+  // AUTH MANAGER
+  final AuthManager _authManager = AuthManager();
+  Map<String, dynamic>? _currentUser;
 
-  // 🔥 UPDATED: FUNCTION TO PICK FILE FOR STUDENT (SUPPORTS PDF & IMAGES)
+  // UPDATED: FUNCTION TO PICK FILE FOR STUDENT (SUPPORTS PDF & IMAGES)
   Future<void> _pickStudentFile() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -4037,7 +5607,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     }
   }
 
-  // 🔥 FUNCTION TO PICK IMAGE (CAMERA/GALLERY)
+  // FUNCTION TO PICK IMAGE (CAMERA/GALLERY)
   Future<void> _pickStudentImage(ImageSource source) async {
     final XFile? file = await _studentPicker.pickImage(
       source: source,
@@ -4089,8 +5659,8 @@ class _StudentHomePageState extends State<StudentHomePage> {
     }
   }
 
-  // 🔥 OPEN FILE VIEWER FOR STUDENT
-  void _openFileViewer(BuildContext context, String paperId) {
+  // FIXED: OPEN FILE VIEWER FOR STUDENT - REMOVED CONTEXT PARAMETER
+  void _openFileViewer(String paperId) {
     final file = _dataManager.getPaperFile(paperId);
     final paper = _dataManager.allPapers.firstWhere(
       (paper) => paper['id'] == paperId,
@@ -4125,7 +5695,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
 
     // Check if paper is approved (public) or belongs to student
     final isPublic = paper['isPublic'] == true;
-    final isOwnPaper = paper['studentId'] == 'STU001';
+    final isOwnPaper = paper['studentId'] == _currentUser?['studentId'] || paper['studentId'] == 'STU001';
 
     if (!isPublic && !isOwnPaper) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -4156,9 +5726,20 @@ class _StudentHomePageState extends State<StudentHomePage> {
     }
   }
 
-  // 🔥 GET UNREAD MESSAGES COUNT FOR STUDENT
+  // GET UNREAD MESSAGES COUNT FOR STUDENT
   int getUnreadMessagesCount() {
-    return _messageManager.getUnreadMessageCount('STU001');
+    return _messageManager.getUnreadMessageCount(_currentUser?['studentId'] ?? 'STU001');
+  }
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentUser();
+  }
+  
+  Future<void> _loadCurrentUser() async {
+    _currentUser = await _authManager.getCurrentUser();
+    setState(() {});
   }
 
   @override
@@ -4169,18 +5750,20 @@ class _StudentHomePageState extends State<StudentHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // 🔥 GET USER'S PENDING SUBMISSIONS
-    final userPendingSubmissions = _dataManager.allPapers
-        .where(
-          (paper) =>
-              paper['status'] == 'pending' && paper['studentId'] == 'STU001',
-        )
-        .toList();
+    // GET USER'S PENDING SUBMISSIONS
+    final userPendingSubmissions = _currentUser != null 
+        ? _dataManager.allPapers
+            .where(
+              (paper) =>
+                  paper['status'] == 'pending' && paper['studentId'] == _currentUser!['studentId'],
+            )
+            .toList()
+        : [];
 
-    // 🔥 GET PUBLIC PAPERS (APPROVED PAPERS)
+    // GET PUBLIC PAPERS (APPROVED PAPERS)
     final publicPapers = _dataManager.getPublicPapers();
 
-    // 🔥 GET UNREAD MESSAGES COUNT
+    // GET UNREAD MESSAGES COUNT
     final unreadMessagesCount = getUnreadMessagesCount();
 
     return Scaffold(
@@ -4191,9 +5774,18 @@ class _StudentHomePageState extends State<StudentHomePage> {
         elevation: 0,
         title: Row(
           children: [
-            const CircleAvatar(
+            CircleAvatar(
               backgroundColor: Colors.blue,
-              child: Icon(Icons.person, color: Colors.white, size: 24),
+              backgroundImage: _currentUser != null && 
+                  _currentUser!['profilePicture'] != null && 
+                  _currentUser!['profilePicture'].isNotEmpty
+                  ? FileImage(File(_currentUser!['profilePicture']))
+                  : null,
+              child: _currentUser == null || 
+                  _currentUser!['profilePicture'] == null || 
+                  _currentUser!['profilePicture'].isEmpty
+                  ? const Icon(Icons.person, color: Colors.white, size: 24)
+                  : null,
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -4208,7 +5800,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                     overflow: TextOverflow.ellipsis,
                   ),
                   Text(
-                    'Dear Student',
+                    _currentUser?['fullName']?.split(' ').first ?? 'Student',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -4223,7 +5815,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
           ],
         ),
         actions: [
-          // 🔥 MESSAGES ICON WITH BADGE
+          // MESSAGES ICON WITH BADGE
           Stack(
             children: [
               IconButton(
@@ -4265,7 +5857,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                   color: Colors.grey,
                   size: 22,
                 ),
-                // 🔥 SHOW BADGE IF USER HAS PENDING PAPERS
+                // SHOW BADGE IF USER HAS PENDING PAPERS
                 if (userPendingSubmissions.isNotEmpty)
                   Positioned(
                     right: 0,
@@ -4312,10 +5904,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
             ],
             onSelected: (value) {
               if (value == 'logout') {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => const WelcomePage()),
-                );
+                _logout();
               }
             },
           ),
@@ -4363,10 +5952,37 @@ class _StudentHomePageState extends State<StudentHomePage> {
                 label: 'Profile',
               ),
             ],
-          );
-        },
+          ),
+        ),
       ),
     );
+  }
+  
+  Future<void> _logout() async {
+    try {
+      await _authManager.logout();
+      
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const WelcomePage()),
+        (route) => false,
+      );
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Logged out successfully'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error logging out: $e'),
+          duration: Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Widget _buildBody(
@@ -4382,7 +5998,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
       case 2:
         return _buildAIExercises();
       case 3:
-        return _buildProfile(pendingSubmissions);
+        return const StudentProfilePage();
       default:
         return _buildDashboard(pendingSubmissions, publicPapers);
     }
@@ -4447,7 +6063,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
           ),
           _buildStatItem(
             Icons.upload_file,
-            '${pendingSubmissions.length + publicPapers.where((p) => p['studentId'] == 'STU001').length}',
+            '${pendingSubmissions.length + publicPapers.where((p) => p['studentId'] == _currentUser?['studentId']).length}',
             'My Uploads',
             Colors.blue,
           ),
@@ -4536,6 +6152,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     );
   }
 
+  // FIXED: _buildPaperCard method with corrected _openFileViewer call
   Widget _buildPaperCard(Map<String, dynamic> paper, {bool isPending = false}) {
     final hasFile = _dataManager.paperHasFile(paper['id']);
     final fileType = _dataManager.getPaperFileType(paper['id']);
@@ -4553,7 +6170,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
           leading: GestureDetector(
             onTap: () {
               if (hasFile) {
-                _openFileViewer(context, paper['id']);
+                _openFileViewer(paper['id']);
               }
             },
             child: Stack(
@@ -4708,7 +6325,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
               leading: GestureDetector(
                 onTap: () {
                   if (hasFile) {
-                    _openFileViewer(context, paper['id']);
+                    _openFileViewer(paper['id']);
                   }
                 },
                 child: Stack(
@@ -4782,7 +6399,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                     IconButton(
                       icon: const Icon(Icons.visibility, size: 22),
                       onPressed: () {
-                        _openFileViewer(context, paper['id']);
+                        _openFileViewer(paper['id']);
                       },
                       tooltip: 'View File',
                     ),
@@ -4951,106 +6568,6 @@ class _StudentHomePageState extends State<StudentHomePage> {
     );
   }
 
-  Widget _buildProfile(List<Map<String, dynamic>> pendingSubmissions) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          const CircleAvatar(
-            radius: 60,
-            backgroundColor: Colors.blue,
-            child: Icon(Icons.person, size: 60, color: Colors.white),
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'Student Profile',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'ID: STU001',
-            style: TextStyle(fontSize: 16, color: Colors.grey),
-          ),
-          const SizedBox(height: 32),
-
-          // Pending submissions status
-          if (pendingSubmissions.isNotEmpty) ...[
-            Card(
-              color: Colors.orange[50],
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.pending, color: Colors.orange),
-                        SizedBox(width: 10),
-                        Text(
-                          'Pending Submissions',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.orange,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      'You have ${pendingSubmissions.length} paper(s) waiting for admin approval',
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-          ],
-
-          _buildProfileMenuItem(Icons.history, 'My Submission History', () {
-            _showSubmissionHistory(context);
-          }),
-          _buildProfileMenuItem(
-            Icons.library_books,
-            'Browse Public Papers',
-            () {
-              _selectedIndex.value = 1;
-            },
-          ),
-          _buildProfileMenuItem(Icons.help_outline, 'Help & Support', () {
-            _showHelpSupport(context);
-          }),
-          _buildProfileMenuItem(Icons.logout, 'Logout', () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const WelcomePage()),
-            );
-          }, isLogout: true),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProfileMenuItem(
-    IconData icon,
-    String text,
-    VoidCallback onTap, {
-    bool isLogout = false,
-  }) {
-    return ListTile(
-      leading: Icon(icon, color: isLogout ? Colors.red : Colors.grey[700]),
-      title: Text(
-        text,
-        style: TextStyle(
-          color: isLogout ? Colors.red : Colors.black,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: onTap,
-    );
-  }
-
   void _showUploadDialog() {
     final titleController = TextEditingController();
     final subjectController = TextEditingController();
@@ -5136,7 +6653,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                     ),
                     const SizedBox(height: 16),
 
-                    // 🔥 UPDATED: FILE PICKER SECTION FOR PDF & IMAGES
+                    // UPDATED: FILE PICKER SECTION FOR PDF & IMAGES
                     Container(
                       width: double.infinity,
                       height: 200,
@@ -5232,7 +6749,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                     ),
                     const SizedBox(height: 12),
 
-                    // 🔥 UPDATED: FILE SELECTION BUTTONS
+                    // UPDATED: FILE SELECTION BUTTONS
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
@@ -5296,7 +6813,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                                 return;
                               }
 
-                              // 🔥 CREATE NEW PAPER WITH PENDING STATUS
+                              // CREATE NEW PAPER WITH PENDING STATUS
                               final newPaper = {
                                 'id':
                                     'STU${DateTime.now().millisecondsSinceEpoch}',
@@ -5307,8 +6824,8 @@ class _StudentHomePageState extends State<StudentHomePage> {
                                 'fileSize':
                                     '${_selectedStudentFile!.lengthSync() ~/ 1024}KB',
                                 'date': DateTime.now().toString().split(' ')[0],
-                                'studentId': 'STU001',
-                                'studentName': 'Current Student',
+                                'studentId': _currentUser?['studentId'] ?? 'STU001',
+                                'studentName': _currentUser?['fullName'] ?? 'Current Student',
                                 'abstract':
                                     descriptionController.text.isNotEmpty
                                     ? descriptionController.text
@@ -5322,25 +6839,25 @@ class _StudentHomePageState extends State<StudentHomePage> {
                                     : '.file',
                               };
 
-                              // 🔥 ADD TO GLOBAL DATA MANAGER WITH FILE
+                              // ADD TO GLOBAL DATA MANAGER WITH FILE
                               _dataManager.addPaper(
                                 newPaper,
                                 file: _selectedStudentFile,
                                 fileType: _selectedFileType,
                               );
 
-                              // 🔥 ADD NOTIFICATION FOR ADMIN
+                              // ADD NOTIFICATION FOR ADMIN
                               _dataManager.addNotification(
                                 'New Paper Submission',
                                 'Student submitted "${titleController.text}" for review',
                               );
 
-                              // 🔥 SEND MESSAGE TO ADMIN
+                              // SEND MESSAGE TO ADMIN
                               _messageManager.addMessage(
                                 Message(
                                   id: 'MSG${DateTime.now().millisecondsSinceEpoch}',
-                                  senderId: 'STU001',
-                                  senderName: 'Student',
+                                  senderId: _currentUser?['studentId'] ?? 'STU001',
+                                  senderName: _currentUser?['fullName'] ?? 'Student',
                                   receiverId: 'ADMIN',
                                   text:
                                       'I have submitted a new paper: "${titleController.text}" for review.',
@@ -5354,7 +6871,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                                   content: Text(
                                     'Paper submitted successfully! It will be reviewed by admin.',
                                   ),
-                                  duration: const Duration(seconds: 2),
+                                  duration: Duration(seconds: 2),
                                 ),
                               );
 
@@ -5388,8 +6905,8 @@ class _StudentHomePageState extends State<StudentHomePage> {
       context,
       MaterialPageRoute(
         builder: (context) => ChatScreen(
-          currentUserId: 'STU001',
-          currentUserName: 'Student',
+          currentUserId: _currentUser?['studentId'] ?? 'STU001',
+          currentUserName: _currentUser?['fullName'] ?? 'Student',
           otherUserId: 'ADMIN',
           otherUserName: 'Admin Fahdil',
           messageManager: _messageManager,
@@ -5399,12 +6916,14 @@ class _StudentHomePageState extends State<StudentHomePage> {
   }
 
   void _showNotifications(BuildContext context) {
-    final userPendingSubmissions = _dataManager.allPapers
-        .where(
-          (paper) =>
-              paper['status'] == 'pending' && paper['studentId'] == 'STU001',
-        )
-        .toList();
+    final userPendingSubmissions = _currentUser != null
+        ? _dataManager.allPapers
+            .where(
+              (paper) =>
+                  paper['status'] == 'pending' && paper['studentId'] == _currentUser!['studentId'],
+            )
+            .toList()
+        : [];
 
     showModalBottomSheet(
       context: context,
@@ -5502,7 +7021,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
 
                   const SizedBox(height: 20),
 
-                  // 🔥 FILE PREVIEW SECTION - Students can see approved paper files
+                  // FILE PREVIEW SECTION - Students can see approved paper files
                   if (hasFile && file != null && paper['status'] == 'approved')
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -5520,7 +7039,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                           GestureDetector(
                             onTap: () {
                               Navigator.pop(context);
-                              _openFileViewer(context, paper['id']);
+                              _openFileViewer(paper['id']);
                             },
                             child: Container(
                               width: double.infinity,
@@ -5592,7 +7111,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                           GestureDetector(
                             onTap: () {
                               Navigator.pop(context);
-                              _openFileViewer(context, paper['id']);
+                              _openFileViewer(paper['id']);
                             },
                             child: Container(
                               width: double.infinity,
@@ -5636,7 +7155,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                                       vertical: 10,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: _getFileColor(fileType)!,
+                                      color: _getFileColor(fileType),
                                       borderRadius: BorderRadius.circular(25),
                                     ),
                                     child: const Row(
@@ -5667,11 +7186,11 @@ class _StudentHomePageState extends State<StudentHomePage> {
                       ],
                     ),
 
-                  // 🔥 FOR PENDING PAPERS, SHOW UPLOADED FILE (ONLY OWNER CAN SEE)
+                  // FOR PENDING PAPERS, SHOW UPLOADED FILE (ONLY OWNER CAN SEE)
                   if (hasFile &&
                       file != null &&
                       paper['status'] == 'pending' &&
-                      paper['studentId'] == 'STU001')
+                      paper['studentId'] == _currentUser?['studentId'])
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -5689,7 +7208,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                           GestureDetector(
                             onTap: () {
                               Navigator.pop(context);
-                              _openFileViewer(context, paper['id']);
+                              _openFileViewer(paper['id']);
                             },
                             child: Container(
                               width: double.infinity,
@@ -5761,7 +7280,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                           GestureDetector(
                             onTap: () {
                               Navigator.pop(context);
-                              _openFileViewer(context, paper['id']);
+                              _openFileViewer(paper['id']);
                             },
                             child: Container(
                               width: double.infinity,
@@ -5924,7 +7443,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                         Expanded(
                           child: ElevatedButton(
                             onPressed: () {
-                              _openFileViewer(context, paper['id']);
+                              _openFileViewer(paper['id']);
                             },
                             child: const Row(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -5979,7 +7498,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Downloading ${paper['title']}...'),
-        duration: const Duration(seconds: 2),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -5988,7 +7507,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Generating exercises...'),
-        duration: const Duration(seconds: 2),
+        duration: Duration(seconds: 2),
       ),
     );
 
@@ -6007,7 +7526,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Exercises generated successfully!'),
-          duration: const Duration(seconds: 2),
+          duration: Duration(seconds: 2),
         ),
       );
     });
@@ -6064,7 +7583,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Exercise marked as completed!'),
-        duration: const Duration(seconds: 2),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -6073,14 +7592,14 @@ class _StudentHomePageState extends State<StudentHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Downloading ${exercise['title']}...'),
-        duration: const Duration(seconds: 2),
+        duration: Duration(seconds: 2),
       ),
     );
   }
 
   void _showSubmissionHistory(BuildContext context) {
     final userPapers = _dataManager.allPapers
-        .where((paper) => paper['studentId'] == 'STU001')
+        .where((paper) => paper['studentId'] == _currentUser?['studentId'])
         .toList();
 
     showDialog(
@@ -6120,7 +7639,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
                               icon: const Icon(Icons.visibility, size: 20),
                               onPressed: () {
                                 Navigator.pop(context);
-                                _openFileViewer(context, paper['id']);
+                                _openFileViewer(paper['id']);
                               },
                             )
                           : null,

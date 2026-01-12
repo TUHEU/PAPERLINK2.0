@@ -5,6 +5,11 @@ import 'package:flutter/services.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+// 🔥 ADD THESE IMPORTS FOR FILE VIEWING
+import 'package:pdfx/pdfx.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -249,7 +254,7 @@ class MessageManager {
   MessageManager._internal();
 
   // Store messages between admin and students
-  List<Message> _messages = [
+  final List<Message> _messages = [
     Message(
       id: '1',
       senderId: 'STU001',
@@ -356,19 +361,19 @@ class MessageManager {
       ..sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
   }
 
-  // Mark messages as read
+  // 🔥 FIXED: Mark messages as read
   void markMessagesAsRead(String userId, String otherUserId) {
-    for (var message in _messages) {
-      if (message.senderId == otherUserId &&
-          message.receiverId == userId &&
-          !message.isRead) {
-        message = Message(
-          id: message.id,
-          senderId: message.senderId,
-          senderName: message.senderName,
-          receiverId: message.receiverId,
-          text: message.text,
-          timestamp: message.timestamp,
+    for (var i = 0; i < _messages.length; i++) {
+      if (_messages[i].senderId == otherUserId &&
+          _messages[i].receiverId == userId &&
+          !_messages[i].isRead) {
+        _messages[i] = Message(
+          id: _messages[i].id,
+          senderId: _messages[i].senderId,
+          senderName: _messages[i].senderName,
+          receiverId: _messages[i].receiverId,
+          text: _messages[i].text,
+          timestamp: _messages[i].timestamp,
           isRead: true,
         );
       }
@@ -828,6 +833,202 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
   }
 }
 
+// 🔥 FILE VIEWER WIDGETS
+class PDFViewerScreen extends StatefulWidget {
+  final File pdfFile;
+  final String fileName;
+
+  const PDFViewerScreen({
+    super.key,
+    required this.pdfFile,
+    required this.fileName,
+  });
+
+  @override
+  State<PDFViewerScreen> createState() => _PDFViewerScreenState();
+}
+
+class _PDFViewerScreenState extends State<PDFViewerScreen> {
+  late PdfControllerPinch pdfController;
+  bool _isLoading = true;
+  int _totalPages = 0;
+  int _currentPage = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    pdfController = PdfControllerPinch(
+      document: PdfDocument.openFile(widget.pdfFile.path),
+    );
+    _loadPdfInfo();
+  }
+
+  Future<void> _loadPdfInfo() async {
+    try {
+      final document = await PdfDocument.openFile(widget.pdfFile.path);
+      setState(() {
+        _totalPages = document.pagesCount;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    pdfController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.fileName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download),
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Downloading ${widget.fileName}...'),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                // Page navigation
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  color: Colors.grey[100],
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.chevron_left),
+                        onPressed: _currentPage > 1
+                            ? () {
+                                pdfController.previousPage(
+                                  curve: Curves.easeIn,
+                                  duration: const Duration(milliseconds: 300),
+                                );
+                              }
+                            : null,
+                      ),
+                      Text(
+                        'Page $_currentPage of $_totalPages',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.chevron_right),
+                        onPressed: _currentPage < _totalPages
+                            ? () {
+                                pdfController.nextPage(
+                                  curve: Curves.easeIn,
+                                  duration: const Duration(milliseconds: 300),
+                                );
+                              }
+                            : null,
+                      ),
+                    ],
+                  ),
+                ),
+                // PDF Viewer
+                Expanded(
+                  child: PdfViewPinch(
+                    controller: pdfController,
+                    onDocumentLoaded: (document) {
+                      setState(() {
+                        _totalPages = document.pagesCount;
+                      });
+                    },
+                    onPageChanged: (page) {
+                      setState(() {
+                        _currentPage = page;
+                      });
+                    },
+                    builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
+                      options: const DefaultBuilderOptions(),
+                      documentLoaderBuilder: (_) =>
+                          const Center(child: CircularProgressIndicator()),
+                      pageLoaderBuilder: (_) =>
+                          const Center(child: CircularProgressIndicator()),
+                      errorBuilder: (_, error) =>
+                          Center(child: Text(error.toString())),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class ImageViewerScreen extends StatelessWidget {
+  final File imageFile;
+  final String fileName;
+
+  const ImageViewerScreen({
+    super.key,
+    required this.imageFile,
+    required this.fileName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download),
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Downloading $fileName...'),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: PhotoView(
+        imageProvider: FileImage(imageFile),
+        backgroundDecoration: const BoxDecoration(color: Colors.black),
+        minScale: PhotoViewComputedScale.contained,
+        maxScale: PhotoViewComputedScale.covered * 2,
+        initialScale: PhotoViewComputedScale.contained,
+        heroAttributes: PhotoViewHeroAttributes(tag: fileName),
+        loadingBuilder: (context, event) => Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              value: event == null
+                  ? 0
+                  : event.cumulativeBytesLoaded / event.expectedTotalBytes!,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // 🔥 UPDATED STORAGE MANAGER FOR FILES (PDF & IMAGES)
 class FileStorageManager {
   static final FileStorageManager _instance = FileStorageManager._internal();
@@ -839,9 +1040,9 @@ class FileStorageManager {
   FileStorageManager._internal();
 
   // Store files with their paper IDs
-  Map<String, File> _fileStorage = {};
-  Map<String, String> _filePaths = {};
-  Map<String, String> _fileTypes = {}; // Store file type (PDF, IMAGE, etc.)
+  final Map<String, File> _fileStorage = {};
+  final Map<String, String> _filePaths = {};
+  final Map<String, String> _fileTypes = {}; // Store file type (PDF, IMAGE, etc.)
 
   // Store file
   void storeFile(String paperId, File file, String fileType) {
@@ -868,24 +1069,32 @@ class FileStorageManager {
   // Check if file is image
   bool isImageFile(String paperId) {
     final fileType = _fileTypes[paperId] ?? '';
+    final path = _filePaths[paperId] ?? '';
     return fileType.toLowerCase().contains('image') ||
-        fileType.toLowerCase().contains('jpg') ||
-        fileType.toLowerCase().contains('jpeg') ||
-        fileType.toLowerCase().contains('png');
+        path.toLowerCase().endsWith('.jpg') ||
+        path.toLowerCase().endsWith('.jpeg') ||
+        path.toLowerCase().endsWith('.png') ||
+        path.toLowerCase().endsWith('.gif') ||
+        path.toLowerCase().endsWith('.bmp') ||
+        path.toLowerCase().endsWith('.webp');
   }
 
   // Check if file is PDF
   bool isPdfFile(String paperId) {
     final fileType = _fileTypes[paperId] ?? '';
-    return fileType.toLowerCase().contains('pdf');
+    final path = _filePaths[paperId] ?? '';
+    return fileType.toLowerCase().contains('pdf') ||
+        path.toLowerCase().endsWith('.pdf');
   }
 
   // Check if file is document
   bool isDocumentFile(String paperId) {
     final fileType = _fileTypes[paperId] ?? '';
+    final path = _filePaths[paperId] ?? '';
     return fileType.toLowerCase().contains('doc') ||
-        fileType.toLowerCase().contains('docx') ||
-        fileType.toLowerCase().contains('txt');
+        path.toLowerCase().endsWith('.doc') ||
+        path.toLowerCase().endsWith('.docx') ||
+        path.toLowerCase().endsWith('.txt');
   }
 
   // Remove file
@@ -1178,6 +1387,49 @@ class _AdminHomePageState extends State<AdminHomePage> {
         return Colors.green;
       default:
         return Colors.grey;
+    }
+  }
+
+  // 🔥 OPEN FILE VIEWER
+  void _openFileViewer(BuildContext context, String paperId) {
+    final file = _dataManager.getPaperFile(paperId);
+    final fileName = _dataManager.allPapers.firstWhere(
+      (paper) => paper['id'] == paperId,
+    )['title'];
+
+    if (file == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File not found'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    if (_dataManager.isPaperFilePdf(paperId)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              PDFViewerScreen(pdfFile: file, fileName: fileName),
+        ),
+      );
+    } else if (_dataManager.isPaperFileImage(paperId)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              ImageViewerScreen(imageFile: file, fileName: fileName),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File type not supported for preview'),
+          duration: Duration(seconds: 2),
+        ),
+      );
     }
   }
 
@@ -1782,7 +2034,12 @@ class _AdminHomePageState extends State<AdminHomePage> {
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
-        leading: Icon(icon, color: color, size: 40),
+        leading: GestureDetector(
+          onTap: () {
+            _openFileViewer(context, paper['id']);
+          },
+          child: Icon(icon, color: color, size: 40),
+        ),
         title: Text(
           paper['title'],
           style: const TextStyle(fontWeight: FontWeight.bold),
@@ -1815,6 +2072,13 @@ class _AdminHomePageState extends State<AdminHomePage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             IconButton(
+              icon: const Icon(Icons.visibility, color: Colors.blue),
+              onPressed: () {
+                _viewPaperDetails(context, paper);
+              },
+              tooltip: 'View Details',
+            ),
+            IconButton(
               icon: const Icon(Icons.check_circle, color: Colors.green),
               onPressed: () {
                 _showAcceptPaperDialog(context, paper);
@@ -1827,13 +2091,6 @@ class _AdminHomePageState extends State<AdminHomePage> {
                 _showRejectPaperDialog(context, paper);
               },
               tooltip: 'Reject Paper',
-            ),
-            IconButton(
-              icon: const Icon(Icons.visibility, color: Colors.blue),
-              onPressed: () {
-                _viewPaperDetails(context, paper);
-              },
-              tooltip: 'View Details',
             ),
           ],
         ),
@@ -1865,7 +2122,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     const SizedBox(height: 20),
                     const Text('Assign Grade:'),
                     DropdownButtonFormField<String>(
-                      value: selectedGrade,
+                      initialValue: selectedGrade,
                       items: const [
                         DropdownMenuItem(value: 'A', child: Text('A')),
                         DropdownMenuItem(value: 'B+', child: Text('B+')),
@@ -2102,71 +2359,151 @@ class _AdminHomePageState extends State<AdminHomePage> {
 
                         // Show image preview
                         if (isImage)
-                          Container(
-                            width: double.infinity,
-                            height: 300,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Image.file(
-                              file,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) {
-                                return const Center(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(
-                                        Icons.broken_image,
-                                        size: 60,
-                                        color: Colors.grey,
-                                      ),
-                                      SizedBox(height: 10),
-                                      Text('Unable to load image'),
-                                    ],
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 300,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Stack(
+                                children: [
+                                  Image.file(
+                                    file,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return const Center(
+                                        child: Column(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Icon(
+                                              Icons.broken_image,
+                                              size: 60,
+                                              color: Colors.grey,
+                                            ),
+                                            SizedBox(height: 10),
+                                            Text('Unable to load image'),
+                                          ],
+                                        ),
+                                      );
+                                    },
                                   ),
-                                );
-                              },
+                                  Positioned(
+                                    bottom: 10,
+                                    right: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withOpacity(0.7),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.fullscreen,
+                                            size: 16,
+                                            color: Colors.white,
+                                          ),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            'Tap to view fullscreen',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           )
                         // Show PDF/document preview
                         else
-                          Container(
-                            width: double.infinity,
-                            height: 200,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey),
-                              borderRadius: BorderRadius.circular(8),
-                              color: Colors.grey[100],
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  _getFileIcon(fileType),
-                                  size: 80,
-                                  color: _getFileColor(fileType),
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  '${paper['fileType']} Document',
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 200,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                                color: Colors.grey[100],
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    _getFileIcon(fileType),
+                                    size: 80,
+                                    color: _getFileColor(fileType),
                                   ),
-                                ),
-                                const SizedBox(height: 5),
-                                Text(
-                                  'File: ${file.path.split('/').last}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey,
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    '${paper['fileType']} Document',
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    'File: ${file.path.split('/').last}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _getFileColor(
+                                        fileType,
+                                      ).withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: _getFileColor(fileType),
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.visibility,
+                                          size: 14,
+                                          color: _getFileColor(fileType),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'Tap to view full document',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: _getFileColor(fileType),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         const SizedBox(height: 20),
@@ -2225,19 +2562,22 @@ class _AdminHomePageState extends State<AdminHomePage> {
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Downloading paper...'),
-                                duration: Duration(seconds: 2),
-                              ),
-                            );
-                          },
-                          child: const Text('Download'),
+                      if (hasFile)
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () {
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.visibility, size: 16),
+                                SizedBox(width: 5),
+                                Text('View File'),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ],
@@ -2339,23 +2679,32 @@ class _AdminHomePageState extends State<AdminHomePage> {
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
-        leading: Stack(
-          children: [
-            Icon(icon, color: color, size: 40),
-            if (isImage)
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: Colors.green,
-                    borderRadius: BorderRadius.circular(8),
+        leading: GestureDetector(
+          onTap: () {
+            _openFileViewer(context, paper['id']);
+          },
+          child: Stack(
+            children: [
+              Icon(icon, color: color, size: 40),
+              if (isImage)
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.image,
+                      size: 12,
+                      color: Colors.white,
+                    ),
                   ),
-                  child: const Icon(Icons.image, size: 12, color: Colors.white),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
         title: Text(
           paper['title'],
@@ -2533,81 +2882,150 @@ class _AdminHomePageState extends State<AdminHomePage> {
                         const SizedBox(height: 10),
 
                         if (isImage)
-                          Container(
-                            width: double.infinity,
-                            height: 350,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.file(
-                                file,
-                                fit: BoxFit.contain,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return const Center(
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Icon(
-                                          Icons.broken_image,
-                                          size: 60,
-                                          color: Colors.grey,
-                                        ),
-                                        SizedBox(height: 10),
-                                        Text('Unable to load image'),
-                                      ],
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 350,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.file(
+                                      file,
+                                      fit: BoxFit.contain,
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                            return const Center(
+                                              child: Column(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                children: [
+                                                  Icon(
+                                                    Icons.broken_image,
+                                                    size: 60,
+                                                    color: Colors.grey,
+                                                  ),
+                                                  SizedBox(height: 10),
+                                                  Text('Unable to load image'),
+                                                ],
+                                              ),
+                                            );
+                                          },
                                     ),
-                                  );
-                                },
+                                  ),
+                                  Positioned(
+                                    bottom: 10,
+                                    right: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withOpacity(0.7),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.fullscreen,
+                                            size: 16,
+                                            color: Colors.white,
+                                          ),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            'Tap to view fullscreen',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           )
                         else
-                          Container(
-                            width: double.infinity,
-                            height: 250,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey),
-                              borderRadius: BorderRadius.circular(8),
-                              color: Colors.grey[100],
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  _getFileIcon(fileType),
-                                  size: 80,
-                                  color: _getFileColor(fileType),
-                                ),
-                                const SizedBox(height: 15),
-                                Text(
-                                  '${fileType ?? 'Document'} File',
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 250,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                                color: Colors.grey[100],
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    _getFileIcon(fileType),
+                                    size: 80,
+                                    color: _getFileColor(fileType),
                                   ),
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  file.path.split('/').last,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.grey,
+                                  const SizedBox(height: 15),
+                                  Text(
+                                    '${fileType ?? 'Document'} File',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 20),
-                                ElevatedButton.icon(
-                                  onPressed: () => _downloadPaper(paper),
-                                  icon: const Icon(Icons.download),
-                                  label: const Text('Download File'),
-                                ),
-                              ],
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    file.path.split('/').last,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 20),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 10,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _getFileColor(fileType),
+                                      borderRadius: BorderRadius.circular(25),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.visibility,
+                                          size: 16,
+                                          color: Colors.white,
+                                        ),
+                                        SizedBox(width: 6),
+                                        Text(
+                                          'View Full Document',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         const SizedBox(height: 20),
@@ -2687,14 +3105,23 @@ class _AdminHomePageState extends State<AdminHomePage> {
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () {
-                            _downloadPaper(paper);
-                          },
-                          child: const Text('Download'),
+                      if (hasFile)
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.visibility, size: 16),
+                                SizedBox(width: 5),
+                                Text('View Full'),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: ElevatedButton(
@@ -2864,7 +3291,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     const SizedBox(height: 16),
                     const Text('Select subject:'),
                     DropdownButtonFormField<String>(
-                      value: selectedSubject,
+                      initialValue: selectedSubject,
                       items: const [
                         DropdownMenuItem(
                           value: 'Computer Science',
@@ -2963,7 +3390,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                           : Column(
                               children: [
                                 Expanded(
-                                  child: _dataManager.isPaperFileImage('temp')
+                                  child: _selectedFileType == 'IMAGE'
                                       ? Image.file(
                                           _selectedAdminFile!,
                                           fit: BoxFit.cover,
@@ -3189,7 +3616,12 @@ class _AdminHomePageState extends State<AdminHomePage> {
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
-        leading: Icon(icon, color: color, size: 40),
+        leading: GestureDetector(
+          onTap: () {
+            _openFileViewer(context, paper['id']);
+          },
+          child: Icon(icon, color: color, size: 40),
+        ),
         title: Text(
           paper['title'],
           style: const TextStyle(fontWeight: FontWeight.bold),
@@ -3657,6 +4089,73 @@ class _StudentHomePageState extends State<StudentHomePage> {
     }
   }
 
+  // 🔥 OPEN FILE VIEWER FOR STUDENT
+  void _openFileViewer(BuildContext context, String paperId) {
+    final file = _dataManager.getPaperFile(paperId);
+    final paper = _dataManager.allPapers.firstWhere(
+      (paper) => paper['id'] == paperId,
+      orElse: () => {'title': 'Unknown Paper'},
+    );
+    final fileName = paper['title'];
+
+    if (file == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File not found'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // Check if student can view this file
+    final canView =
+        _dataManager.isPaperFilePdf(paperId) ||
+        _dataManager.isPaperFileImage(paperId);
+
+    if (!canView) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File type not supported for preview'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // Check if paper is approved (public) or belongs to student
+    final isPublic = paper['isPublic'] == true;
+    final isOwnPaper = paper['studentId'] == 'STU001';
+
+    if (!isPublic && !isOwnPaper) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You do not have permission to view this file'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    if (_dataManager.isPaperFilePdf(paperId)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              PDFViewerScreen(pdfFile: file, fileName: fileName),
+        ),
+      );
+    } else if (_dataManager.isPaperFileImage(paperId)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              ImageViewerScreen(imageFile: file, fileName: fileName),
+        ),
+      );
+    }
+  }
+
   // 🔥 GET UNREAD MESSAGES COUNT FOR STUDENT
   int getUnreadMessagesCount() {
     return _messageManager.getUnreadMessageCount('STU001');
@@ -4051,35 +4550,42 @@ class _StudentHomePageState extends State<StudentHomePage> {
         margin: const EdgeInsets.only(bottom: 12),
         child: ListTile(
           contentPadding: const EdgeInsets.all(16),
-          leading: Stack(
-            children: [
-              Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
+          leading: GestureDetector(
+            onTap: () {
+              if (hasFile) {
+                _openFileViewer(context, paper['id']);
+              }
+            },
+            child: Stack(
+              children: [
+                Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
                 ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              if (hasFile && _dataManager.isPaperFileImage(paper['id']))
-                Positioned(
-                  right: 0,
-                  bottom: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.image,
-                      size: 12,
-                      color: Colors.white,
+                if (hasFile && _dataManager.isPaperFileImage(paper['id']))
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.image,
+                        size: 12,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
           title: Text(
             paper['title'],
@@ -4199,27 +4705,34 @@ class _StudentHomePageState extends State<StudentHomePage> {
             margin: const EdgeInsets.only(bottom: 12),
             child: ListTile(
               contentPadding: const EdgeInsets.all(16),
-              leading: Stack(
-                children: [
-                  Icon(icon, color: color, size: 35),
-                  if (hasFile && _dataManager.isPaperFileImage(paper['id']))
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.image,
-                          size: 12,
-                          color: Colors.white,
+              leading: GestureDetector(
+                onTap: () {
+                  if (hasFile) {
+                    _openFileViewer(context, paper['id']);
+                  }
+                },
+                child: Stack(
+                  children: [
+                    Icon(icon, color: color, size: 35),
+                    if (hasFile && _dataManager.isPaperFileImage(paper['id']))
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: color,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.image,
+                            size: 12,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
               title: Text(
                 paper['title'],
@@ -4265,13 +4778,14 @@ class _StudentHomePageState extends State<StudentHomePage> {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.visibility, size: 22),
-                    onPressed: () {
-                      _showPaperDetails(paper);
-                    },
-                    tooltip: 'View Details',
-                  ),
+                  if (hasFile)
+                    IconButton(
+                      icon: const Icon(Icons.visibility, size: 22),
+                      onPressed: () {
+                        _openFileViewer(context, paper['id']);
+                      },
+                      tooltip: 'View File',
+                    ),
                   IconButton(
                     icon: const Icon(Icons.download, size: 22),
                     onPressed: () {
@@ -5003,81 +5517,150 @@ class _StudentHomePageState extends State<StudentHomePage> {
                         const SizedBox(height: 10),
 
                         if (isImage)
-                          Container(
-                            width: double.infinity,
-                            height: 350,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.file(
-                                file,
-                                fit: BoxFit.contain,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return const Center(
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Icon(
-                                          Icons.broken_image,
-                                          size: 60,
-                                          color: Colors.grey,
-                                        ),
-                                        SizedBox(height: 10),
-                                        Text('Unable to load image'),
-                                      ],
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 350,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.file(
+                                      file,
+                                      fit: BoxFit.contain,
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                            return const Center(
+                                              child: Column(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                children: [
+                                                  Icon(
+                                                    Icons.broken_image,
+                                                    size: 60,
+                                                    color: Colors.grey,
+                                                  ),
+                                                  SizedBox(height: 10),
+                                                  Text('Unable to load image'),
+                                                ],
+                                              ),
+                                            );
+                                          },
                                     ),
-                                  );
-                                },
+                                  ),
+                                  Positioned(
+                                    bottom: 10,
+                                    right: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withOpacity(0.7),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.fullscreen,
+                                            size: 16,
+                                            color: Colors.white,
+                                          ),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            'Tap to view fullscreen',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           )
                         else
-                          Container(
-                            width: double.infinity,
-                            height: 250,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey),
-                              borderRadius: BorderRadius.circular(8),
-                              color: Colors.grey[100],
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  _getFileIcon(fileType),
-                                  size: 80,
-                                  color: _getFileColor(fileType),
-                                ),
-                                const SizedBox(height: 15),
-                                Text(
-                                  '${fileType ?? 'Document'} File',
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 250,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                                color: Colors.grey[100],
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    _getFileIcon(fileType),
+                                    size: 80,
+                                    color: _getFileColor(fileType),
                                   ),
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  file.path.split('/').last,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.grey,
+                                  const SizedBox(height: 15),
+                                  Text(
+                                    '${fileType ?? 'Document'} File',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 20),
-                                ElevatedButton.icon(
-                                  onPressed: () => _downloadPaper(paper),
-                                  icon: const Icon(Icons.download),
-                                  label: const Text('Download File'),
-                                ),
-                              ],
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    file.path.split('/').last,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 20),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 10,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _getFileColor(fileType),
+                                      borderRadius: BorderRadius.circular(25),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.visibility,
+                                          size: 16,
+                                          color: Colors.white,
+                                        ),
+                                        SizedBox(width: 6),
+                                        Text(
+                                          'View Full Document',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         const SizedBox(height: 20),
@@ -5103,75 +5686,150 @@ class _StudentHomePageState extends State<StudentHomePage> {
                         const SizedBox(height: 10),
 
                         if (isImage)
-                          Container(
-                            width: double.infinity,
-                            height: 300,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.orange),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.file(
-                                file,
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return const Center(
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Icon(
-                                          Icons.broken_image,
-                                          size: 60,
-                                          color: Colors.grey,
-                                        ),
-                                        SizedBox(height: 10),
-                                        Text('Unable to load image'),
-                                      ],
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 300,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.orange),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.file(
+                                      file,
+                                      fit: BoxFit.cover,
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                            return const Center(
+                                              child: Column(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                children: [
+                                                  Icon(
+                                                    Icons.broken_image,
+                                                    size: 60,
+                                                    color: Colors.grey,
+                                                  ),
+                                                  SizedBox(height: 10),
+                                                  Text('Unable to load image'),
+                                                ],
+                                              ),
+                                            );
+                                          },
                                     ),
-                                  );
-                                },
+                                  ),
+                                  Positioned(
+                                    bottom: 10,
+                                    right: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.orange.withOpacity(0.9),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.fullscreen,
+                                            size: 16,
+                                            color: Colors.white,
+                                          ),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            'Tap to view',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           )
                         else
-                          Container(
-                            width: double.infinity,
-                            height: 200,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.orange),
-                              borderRadius: BorderRadius.circular(8),
-                              color: Colors.orange[50],
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  _getFileIcon(fileType),
-                                  size: 60,
-                                  color: Colors.orange,
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  '${fileType ?? 'File'} Document',
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
+                          GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: Container(
+                              width: double.infinity,
+                              height: 200,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.orange),
+                                borderRadius: BorderRadius.circular(8),
+                                color: Colors.orange[50],
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    _getFileIcon(fileType),
+                                    size: 60,
                                     color: Colors.orange,
                                   ),
-                                ),
-                                const SizedBox(height: 5),
-                                Text(
-                                  file.path.split('/').last,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.orange,
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    '${fileType ?? 'File'} Document',
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.orange,
+                                    ),
                                   ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    file.path.split('/').last,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.orange,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 15),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 8,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.orange,
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.visibility,
+                                          size: 14,
+                                          color: Colors.white,
+                                        ),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'View Your Submission',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         const SizedBox(height: 10),
@@ -5262,15 +5920,22 @@ class _StudentHomePageState extends State<StudentHomePage> {
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () {
-                            _downloadPaper(paper);
-                            Navigator.pop(context);
-                          },
-                          child: const Text('Download'),
+                      if (hasFile)
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () {
+                              _openFileViewer(context, paper['id']);
+                            },
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.visibility, size: 16),
+                                SizedBox(width: 5),
+                                Text('View File'),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ],
@@ -5450,6 +6115,15 @@ class _StudentHomePageState extends State<StudentHomePage> {
                       subtitle: Text(
                         '${paper['date']} • ${paper['status']} • ${paper['grade'] ?? ''}',
                       ),
+                      trailing: paper['hasFile'] == true
+                          ? IconButton(
+                              icon: const Icon(Icons.visibility, size: 20),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                _openFileViewer(context, paper['id']);
+                              },
+                            )
+                          : null,
                     ),
                   ),
               ],

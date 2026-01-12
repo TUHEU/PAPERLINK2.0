@@ -9,7 +9,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.flutter_application_1"
+    namespace = "com.example.paperlink"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
