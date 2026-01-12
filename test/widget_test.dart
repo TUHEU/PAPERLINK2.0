@@ -7,9 +7,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 // 🔥 ADD THESE IMPORTS FOR FILE VIEWING
 import 'package:pdfx/pdfx.dart';
-import 'package:photo_view/photo_view.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1042,7 +1039,8 @@ class FileStorageManager {
   // Store files with their paper IDs
   final Map<String, File> _fileStorage = {};
   final Map<String, String> _filePaths = {};
-  final Map<String, String> _fileTypes = {}; // Store file type (PDF, IMAGE, etc.)
+  final Map<String, String> _fileTypes =
+      {}; // Store file type (PDF, IMAGE, etc.)
 
   // Store file
   void storeFile(String paperId, File file, String fileType) {

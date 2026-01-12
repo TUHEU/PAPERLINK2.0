@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:pdfx/pdfx.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path_lib;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_animations/flutter_map_animations.dart';
 import 'package:geolocator/geolocator.dart';
@@ -15,10 +16,10 @@ import 'package:geocoding/geocoding.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:get/get.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart' as path_package;
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
-import 'package:path/path.dart' as path_lib;
-import 'package:path/path.dart' as path_package;
+
 // ==============================================
 // DATABASE HELPER FOR SQLITE
 // ==============================================
@@ -26,21 +27,21 @@ import 'package:path/path.dart' as path_package;
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
   factory DatabaseHelper() => _instance;
-  
+
   static Database? _database;
-  
+
   DatabaseHelper._internal();
-  
+
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDatabase();
     return _database!;
   }
-  
+
   Future<Database> _initDatabase() async {
     final documentsDirectory = await getApplicationDocumentsDirectory();
-    final path = join(documentsDirectory.path, 'paperlink.db');
-    
+    final path = path_package.join(documentsDirectory.path, 'paperlink.db');
+
     return await openDatabase(
       path,
       version: 2,
@@ -48,7 +49,7 @@ class DatabaseHelper {
       onUpgrade: _onUpgrade,
     );
   }
-  
+
   Future<void> _onCreate(Database db, int version) async {
     // Users table
     await db.execute('''
@@ -64,7 +65,7 @@ class DatabaseHelper {
         isLoggedIn INTEGER DEFAULT 0
       )
     ''');
-    
+
     // User papers table
     await db.execute('''
       CREATE TABLE user_papers(
@@ -80,13 +81,13 @@ class DatabaseHelper {
         FOREIGN KEY (userId) REFERENCES users (id) ON DELETE CASCADE
       )
     ''');
-    
+
     // Create indexes
     await db.execute('CREATE INDEX idx_user_id ON user_papers(userId)');
     await db.execute('CREATE INDEX idx_email ON users(email)');
     await db.execute('CREATE INDEX idx_student_id ON users(studentId)');
   }
-  
+
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await db.execute('''
@@ -105,13 +106,13 @@ class DatabaseHelper {
       ''');
     }
   }
-  
+
   // User operations
   Future<int> insertUser(Map<String, dynamic> user) async {
     final db = await database;
     return await db.insert('users', user);
   }
-  
+
   Future<Map<String, dynamic>?> getUserByEmail(String email) async {
     final db = await database;
     final List<Map<String, dynamic>> results = await db.query(
@@ -121,7 +122,7 @@ class DatabaseHelper {
     );
     return results.isNotEmpty ? results.first : null;
   }
-  
+
   Future<Map<String, dynamic>?> getUserByStudentId(String studentId) async {
     final db = await database;
     final List<Map<String, dynamic>> results = await db.query(
@@ -131,7 +132,7 @@ class DatabaseHelper {
     );
     return results.isNotEmpty ? results.first : null;
   }
-  
+
   Future<Map<String, dynamic>?> getLoggedInUser() async {
     final db = await database;
     final List<Map<String, dynamic>> results = await db.query(
@@ -141,7 +142,7 @@ class DatabaseHelper {
     );
     return results.isNotEmpty ? results.first : null;
   }
-  
+
   Future<void> updateUserLoginStatus(int userId, bool isLoggedIn) async {
     final db = await database;
     await db.update(
@@ -151,28 +152,26 @@ class DatabaseHelper {
       whereArgs: [userId],
     );
   }
-  
-  Future<void> updateUserProfile(int userId, Map<String, dynamic> updates) async {
+
+  Future<void> updateUserProfile(
+    int userId,
+    Map<String, dynamic> updates,
+  ) async {
     final db = await database;
-    await db.update(
-      'users',
-      updates,
-      where: 'id = ?',
-      whereArgs: [userId],
-    );
+    await db.update('users', updates, where: 'id = ?', whereArgs: [userId]);
   }
-  
+
   Future<void> logoutAllUsers() async {
     final db = await database;
     await db.update('users', {'isLoggedIn': 0});
   }
-  
+
   // Paper operations
   Future<int> insertUserPaper(Map<String, dynamic> paper) async {
     final db = await database;
     return await db.insert('user_papers', paper);
   }
-  
+
   Future<List<Map<String, dynamic>>> getUserPapers(int userId) async {
     final db = await database;
     return await db.query(
@@ -182,16 +181,12 @@ class DatabaseHelper {
       orderBy: 'uploadedAt DESC',
     );
   }
-  
+
   Future<void> deleteUserPaper(int paperId) async {
     final db = await database;
-    await db.delete(
-      'user_papers',
-      where: 'id = ?',
-      whereArgs: [paperId],
-    );
+    await db.delete('user_papers', where: 'id = ?', whereArgs: [paperId]);
   }
-  
+
   Future<void> close() async {
     final db = await database;
     await db.close();
@@ -205,19 +200,19 @@ class DatabaseHelper {
 class AuthManager {
   static final AuthManager _instance = AuthManager._internal();
   factory AuthManager() => _instance;
-  
+
   final DatabaseHelper _dbHelper = DatabaseHelper();
   Map<String, dynamic>? _currentUser;
-  
+
   AuthManager._internal();
-  
+
   // Hash password using SHA-256
   String _hashPassword(String password) {
     final bytes = utf8.encode(password);
     final digest = sha256.convert(bytes);
     return digest.toString();
   }
-  
+
   // Register new user
   Future<Map<String, dynamic>> registerUser({
     required String email,
@@ -232,13 +227,13 @@ class AuthManager {
     if (existingUser != null) {
       throw Exception('Email already registered');
     }
-    
+
     // Check if student ID already exists
     final existingStudent = await _dbHelper.getUserByStudentId(studentId);
     if (existingStudent != null) {
       throw Exception('Student ID already registered');
     }
-    
+
     // Create new user
     final newUser = {
       'email': email,
@@ -250,47 +245,47 @@ class AuthManager {
       'createdAt': DateTime.now().toIso8601String(),
       'isLoggedIn': 0,
     };
-    
+
     final userId = await _dbHelper.insertUser(newUser);
     newUser['id'] = userId;
-    
+
     return newUser;
   }
-  
+
   // Login user
   Future<Map<String, dynamic>> loginUser({
     required String email,
     required String password,
   }) async {
     final user = await _dbHelper.getUserByEmail(email);
-    
+
     if (user == null) {
       throw Exception('User not found');
     }
-    
+
     final hashedPassword = _hashPassword(password);
     if (user['password'] != hashedPassword) {
       throw Exception('Invalid password');
     }
-    
+
     // Logout all users first
     await _dbHelper.logoutAllUsers();
-    
+
     // Set current user as logged in
     await _dbHelper.updateUserLoginStatus(user['id'], true);
-    
+
     _currentUser = user;
     return user;
   }
-  
+
   // Get current user
   Future<Map<String, dynamic>?> getCurrentUser() async {
     if (_currentUser != null) return _currentUser;
-    
+
     _currentUser = await _dbHelper.getLoggedInUser();
     return _currentUser;
   }
-  
+
   // Logout user
   Future<void> logout() async {
     if (_currentUser != null) {
@@ -298,7 +293,7 @@ class AuthManager {
     }
     _currentUser = null;
   }
-  
+
   // Update user profile
   Future<void> updateProfile({
     required int userId,
@@ -307,21 +302,22 @@ class AuthManager {
     String? profilePicturePath,
   }) async {
     final updates = <String, dynamic>{};
-    
+
     if (fullName != null) updates['fullName'] = fullName;
     if (phoneNumber != null) updates['phoneNumber'] = phoneNumber;
-    if (profilePicturePath != null) updates['profilePicture'] = profilePicturePath;
-    
+    if (profilePicturePath != null)
+      updates['profilePicture'] = profilePicturePath;
+
     if (updates.isNotEmpty) {
       await _dbHelper.updateUserProfile(userId, updates);
-      
+
       // Update current user in memory
       if (_currentUser != null && _currentUser!['id'] == userId) {
         _currentUser = {..._currentUser!, ...updates};
       }
     }
   }
-  
+
   // Check if user is logged in
   Future<bool> isLoggedIn() async {
     final user = await getCurrentUser();
@@ -337,23 +333,26 @@ class FileStorageHelper {
   static Future<String> getProfilePicturesDirectory() async {
     final appDir = await getApplicationDocumentsDirectory();
     final profilePicsDir = Directory('${appDir.path}/profile_pictures');
-    
+
     if (!await profilePicsDir.exists()) {
       await profilePicsDir.create(recursive: true);
     }
-    
+
     return profilePicsDir.path;
   }
-  
-  static Future<String> saveProfilePicture(File imageFile, String userId) async {
+
+  static Future<String> saveProfilePicture(
+    File imageFile,
+    String userId,
+  ) async {
     final dir = await getProfilePicturesDirectory();
     final extension = path_lib.extension(imageFile.path);
     final newPath = '$dir/profile_$userId$extension';
-    
+
     await imageFile.copy(newPath);
     return newPath;
   }
-  
+
   static Future<void> deleteProfilePicture(String path) async {
     final file = File(path);
     if (await file.exists()) {
@@ -368,19 +367,19 @@ class FileStorageHelper {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarBrightness: Brightness.dark,
       statusBarIconBrightness: Brightness.dark,
     ),
   );
-  
+
   // Initialize database
   await DatabaseHelper().database;
-  
+
   runApp(const PaperLinkApp());
 }
 
@@ -455,15 +454,14 @@ class _SplashScreenState extends State<SplashScreen>
 
   Future<void> _checkLoginStatus() async {
     await Future.delayed(const Duration(seconds: 2));
-    
+
     final isLoggedIn = await _authManager.isLoggedIn();
-    
+
     Navigator.pushReplacement(
       context,
       PageRouteBuilder(
-        pageBuilder: (_, __, ___) => isLoggedIn 
-            ? const StudentHomePage()
-            : const WelcomePage(),
+        pageBuilder: (_, __, ___) =>
+            isLoggedIn ? const StudentHomePage() : const WelcomePage(),
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
         },
@@ -736,28 +734,37 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
   final AuthManager _authManager = AuthManager();
   final PageController _pageController = PageController();
   int _currentPage = 0;
-  
+
   // Login controllers
   final TextEditingController _loginEmailController = TextEditingController();
-  final TextEditingController _loginPasswordController = TextEditingController();
+  final TextEditingController _loginPasswordController =
+      TextEditingController();
   final ValueNotifier<bool> _loginPasswordVisible = ValueNotifier(false);
   final ValueNotifier<bool> _loginLoading = ValueNotifier(false);
-  
+
   // Register controllers
-  final TextEditingController _registerEmailController = TextEditingController();
-  final TextEditingController _registerPasswordController = TextEditingController();
-  final TextEditingController _registerConfirmPasswordController = TextEditingController();
-  final TextEditingController _registerFullNameController = TextEditingController();
-  final TextEditingController _registerStudentIdController = TextEditingController();
-  final TextEditingController _registerPhoneController = TextEditingController();
+  final TextEditingController _registerEmailController =
+      TextEditingController();
+  final TextEditingController _registerPasswordController =
+      TextEditingController();
+  final TextEditingController _registerConfirmPasswordController =
+      TextEditingController();
+  final TextEditingController _registerFullNameController =
+      TextEditingController();
+  final TextEditingController _registerStudentIdController =
+      TextEditingController();
+  final TextEditingController _registerPhoneController =
+      TextEditingController();
   final ValueNotifier<bool> _registerPasswordVisible = ValueNotifier(false);
-  final ValueNotifier<bool> _registerConfirmPasswordVisible = ValueNotifier(false);
+  final ValueNotifier<bool> _registerConfirmPasswordVisible = ValueNotifier(
+    false,
+  );
   final ValueNotifier<bool> _registerLoading = ValueNotifier(false);
-  
+
   // Profile picture
   File? _profilePicture;
   final ImagePicker _picker = ImagePicker();
-  
+
   @override
   void dispose() {
     _pageController.dispose();
@@ -776,37 +783,37 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
     _registerLoading.dispose();
     super.dispose();
   }
-  
+
   Future<void> _pickProfilePicture() async {
     final XFile? file = await _picker.pickImage(
       source: ImageSource.gallery,
       imageQuality: 85,
     );
-    
+
     if (file != null) {
       setState(() {
         _profilePicture = File(file.path);
       });
     }
   }
-  
+
   Future<void> _takeProfilePicture() async {
     final XFile? file = await _picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 85,
     );
-    
+
     if (file != null) {
       setState(() {
         _profilePicture = File(file.path);
       });
     }
   }
-  
+
   Future<void> _login() async {
     final email = _loginEmailController.text.trim();
     final password = _loginPasswordController.text.trim();
-    
+
     if (email.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -816,12 +823,12 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       );
       return;
     }
-    
+
     _loginLoading.value = true;
-    
+
     try {
       await _authManager.loginUser(email: email, password: password);
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Login successful!'),
@@ -829,7 +836,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
           backgroundColor: Colors.green,
         ),
       );
-      
+
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const StudentHomePage()),
@@ -846,7 +853,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       _loginLoading.value = false;
     }
   }
-  
+
   Future<void> _register() async {
     final email = _registerEmailController.text.trim();
     final password = _registerPasswordController.text.trim();
@@ -854,10 +861,13 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
     final fullName = _registerFullNameController.text.trim();
     final studentId = _registerStudentIdController.text.trim();
     final phone = _registerPhoneController.text.trim();
-    
+
     // Validation
-    if (email.isEmpty || password.isEmpty || confirmPassword.isEmpty || 
-        fullName.isEmpty || studentId.isEmpty) {
+    if (email.isEmpty ||
+        password.isEmpty ||
+        confirmPassword.isEmpty ||
+        fullName.isEmpty ||
+        studentId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please fill in all required fields'),
@@ -866,7 +876,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       );
       return;
     }
-    
+
     if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -876,7 +886,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       );
       return;
     }
-    
+
     if (password.length < 6) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -886,7 +896,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       );
       return;
     }
-    
+
     if (password != confirmPassword) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -896,9 +906,9 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       );
       return;
     }
-    
+
     _registerLoading.value = true;
-    
+
     try {
       String? profilePicturePath;
       if (_profilePicture != null) {
@@ -907,7 +917,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
           studentId,
         );
       }
-      
+
       await _authManager.registerUser(
         email: email,
         password: password,
@@ -916,7 +926,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
         phoneNumber: phone.isNotEmpty ? phone : null,
         profilePicturePath: profilePicturePath,
       );
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Registration successful! Please login'),
@@ -924,7 +934,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
           backgroundColor: Colors.green,
         ),
       );
-      
+
       // Switch to login page
       _pageController.animateToPage(
         0,
@@ -934,7 +944,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       setState(() {
         _currentPage = 0;
       });
-      
+
       // Clear form
       _registerEmailController.clear();
       _registerPasswordController.clear();
@@ -943,7 +953,6 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       _registerStudentIdController.clear();
       _registerPhoneController.clear();
       _profilePicture = null;
-      
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -956,7 +965,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       _registerLoading.value = false;
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -980,7 +989,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
         children: [
           // Login Page
           _buildLoginPage(),
-          
+
           // Register Page
           _buildRegisterPage(),
         ],
@@ -995,10 +1004,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
           );
         },
         items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.login),
-            label: 'Login',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.login), label: 'Login'),
           BottomNavigationBarItem(
             icon: Icon(Icons.person_add),
             label: 'Register',
@@ -1007,7 +1013,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       ),
     );
   }
-  
+
   Widget _buildLoginPage() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -1015,13 +1021,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 20),
-          const Center(
-            child: Icon(
-              Icons.school,
-              size: 80,
-              color: Colors.blue,
-            ),
-          ),
+          const Center(child: Icon(Icons.school, size: 80, color: Colors.blue)),
           const SizedBox(height: 20),
           const Center(
             child: Text(
@@ -1037,7 +1037,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             ),
           ),
           const SizedBox(height: 40),
-          
+
           TextFormField(
             controller: _loginEmailController,
             keyboardType: TextInputType.emailAddress,
@@ -1050,7 +1050,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             ),
           ),
           const SizedBox(height: 20),
-          
+
           ValueListenableBuilder<bool>(
             valueListenable: _loginPasswordVisible,
             builder: (context, isVisible, child) {
@@ -1065,7 +1065,8 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
                       isVisible ? Icons.visibility : Icons.visibility_off,
                     ),
                     onPressed: () {
-                      _loginPasswordVisible.value = !_loginPasswordVisible.value;
+                      _loginPasswordVisible.value =
+                          !_loginPasswordVisible.value;
                     },
                   ),
                   border: OutlineInputBorder(
@@ -1075,7 +1076,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
               );
             },
           ),
-          
+
           const SizedBox(height: 10),
           Align(
             alignment: Alignment.centerRight,
@@ -1092,9 +1093,9 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
               child: const Text('Forgot Password?'),
             ),
           ),
-          
+
           const SizedBox(height: 30),
-          
+
           ValueListenableBuilder<bool>(
             valueListenable: _loginLoading,
             builder: (context, isLoading, child) {
@@ -1130,11 +1131,11 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
               );
             },
           ),
-          
+
           const SizedBox(height: 20),
           const Divider(),
           const SizedBox(height: 20),
-          
+
           Center(
             child: TextButton(
               onPressed: () {
@@ -1151,7 +1152,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
       ),
     );
   }
-  
+
   Widget _buildRegisterPage() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -1160,11 +1161,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
         children: [
           const SizedBox(height: 20),
           const Center(
-            child: Icon(
-              Icons.person_add,
-              size: 80,
-              color: Colors.blue,
-            ),
+            child: Icon(Icons.person_add, size: 80, color: Colors.blue),
           ),
           const SizedBox(height: 20),
           const Center(
@@ -1181,7 +1178,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             ),
           ),
           const SizedBox(height: 40),
-          
+
           // Profile Picture Section
           Center(
             child: Column(
@@ -1212,7 +1209,11 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
                           border: Border.all(color: Colors.white, width: 3),
                         ),
                         child: IconButton(
-                          icon: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
+                          icon: const Icon(
+                            Icons.camera_alt,
+                            color: Colors.white,
+                            size: 20,
+                          ),
                           onPressed: () {
                             showModalBottomSheet(
                               context: context,
@@ -1243,8 +1244,14 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
                                     ),
                                     if (_profilePicture != null)
                                       ListTile(
-                                        leading: const Icon(Icons.delete, color: Colors.red),
-                                        title: const Text('Remove Photo', style: TextStyle(color: Colors.red)),
+                                        leading: const Icon(
+                                          Icons.delete,
+                                          color: Colors.red,
+                                        ),
+                                        title: const Text(
+                                          'Remove Photo',
+                                          style: TextStyle(color: Colors.red),
+                                        ),
                                         onTap: () {
                                           Navigator.pop(context);
                                           setState(() {
@@ -1270,9 +1277,9 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
               ],
             ),
           ),
-          
+
           const SizedBox(height: 30),
-          
+
           TextFormField(
             controller: _registerFullNameController,
             decoration: InputDecoration(
@@ -1284,7 +1291,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             ),
           ),
           const SizedBox(height: 20),
-          
+
           TextFormField(
             controller: _registerStudentIdController,
             decoration: InputDecoration(
@@ -1296,7 +1303,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             ),
           ),
           const SizedBox(height: 20),
-          
+
           TextFormField(
             controller: _registerEmailController,
             keyboardType: TextInputType.emailAddress,
@@ -1309,7 +1316,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             ),
           ),
           const SizedBox(height: 20),
-          
+
           ValueListenableBuilder<bool>(
             valueListenable: _registerPasswordVisible,
             builder: (context, isVisible, child) {
@@ -1324,7 +1331,8 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
                       isVisible ? Icons.visibility : Icons.visibility_off,
                     ),
                     onPressed: () {
-                      _registerPasswordVisible.value = !_registerPasswordVisible.value;
+                      _registerPasswordVisible.value =
+                          !_registerPasswordVisible.value;
                     },
                   ),
                   border: OutlineInputBorder(
@@ -1335,7 +1343,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             },
           ),
           const SizedBox(height: 20),
-          
+
           ValueListenableBuilder<bool>(
             valueListenable: _registerConfirmPasswordVisible,
             builder: (context, isVisible, child) {
@@ -1350,7 +1358,8 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
                       isVisible ? Icons.visibility : Icons.visibility_off,
                     ),
                     onPressed: () {
-                      _registerConfirmPasswordVisible.value = !_registerConfirmPasswordVisible.value;
+                      _registerConfirmPasswordVisible.value =
+                          !_registerConfirmPasswordVisible.value;
                     },
                   ),
                   border: OutlineInputBorder(
@@ -1361,7 +1370,7 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
             },
           ),
           const SizedBox(height: 20),
-          
+
           TextFormField(
             controller: _registerPhoneController,
             keyboardType: TextInputType.phone,
@@ -1373,9 +1382,9 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
               ),
             ),
           ),
-          
+
           const SizedBox(height: 30),
-          
+
           ValueListenableBuilder<bool>(
             valueListenable: _registerLoading,
             builder: (context, isLoading, child) {
@@ -1411,11 +1420,11 @@ class _StudentAuthPageState extends State<StudentAuthPage> {
               );
             },
           ),
-          
+
           const SizedBox(height: 20),
           const Divider(),
           const SizedBox(height: 20),
-          
+
           Center(
             child: TextButton(
               onPressed: () {
@@ -1451,31 +1460,31 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
   Map<String, dynamic>? _user;
   List<Map<String, dynamic>> _userPapers = [];
   bool _isLoading = true;
-  
+
   // Profile editing
   final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   File? _newProfilePicture;
   final ImagePicker _picker = ImagePicker();
   bool _isEditing = false;
-  
+
   @override
   void initState() {
     super.initState();
     _loadUserData();
   }
-  
+
   Future<void> _loadUserData() async {
     setState(() {
       _isLoading = true;
     });
-    
+
     try {
       _user = await _authManager.getCurrentUser();
       if (_user != null) {
         _fullNameController.text = _user!['fullName'];
         _phoneController.text = _user!['phoneNumber'] ?? '';
-        
+
         // Load user papers
         _userPapers = await _dbHelper.getUserPapers(_user!['id']);
       }
@@ -1493,67 +1502,70 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
       });
     }
   }
-  
+
   Future<void> _pickNewProfilePicture() async {
     final XFile? file = await _picker.pickImage(
       source: ImageSource.gallery,
       imageQuality: 85,
     );
-    
+
     if (file != null) {
       setState(() {
         _newProfilePicture = File(file.path);
       });
     }
   }
-  
+
   Future<void> _takeNewProfilePicture() async {
     final XFile? file = await _picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 85,
     );
-    
+
     if (file != null) {
       setState(() {
         _newProfilePicture = File(file.path);
       });
     }
   }
-  
+
   Future<void> _saveProfileChanges() async {
     if (_user == null) return;
-    
+
     try {
       String? profilePicturePath;
-      
+
       // Save new profile picture if selected
       if (_newProfilePicture != null) {
         // Delete old profile picture if exists
-        if (_user!['profilePicture'] != null && _user!['profilePicture'].isNotEmpty) {
-          await FileStorageHelper.deleteProfilePicture(_user!['profilePicture']);
+        if (_user!['profilePicture'] != null &&
+            _user!['profilePicture'].isNotEmpty) {
+          await FileStorageHelper.deleteProfilePicture(
+            _user!['profilePicture'],
+          );
         }
-        
+
         profilePicturePath = await FileStorageHelper.saveProfilePicture(
           _newProfilePicture!,
           _user!['studentId'],
         );
       }
-      
+
       await _authManager.updateProfile(
         userId: _user!['id'],
         fullName: _fullNameController.text.trim(),
         phoneNumber: _phoneController.text.trim(),
         profilePicturePath: profilePicturePath,
       );
-      
+
       // Reload user data
       await _loadUserData();
-      
+
       setState(() {
         _isEditing = false;
         _newProfilePicture = null;
       });
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Profile updated successfully!'),
@@ -1571,17 +1583,17 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
       );
     }
   }
-  
+
   Future<void> _logout() async {
     try {
       await _authManager.logout();
-      
+
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (context) => const WelcomePage()),
         (route) => false,
       );
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Logged out successfully'),
@@ -1598,28 +1610,20 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
       );
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    
+
     if (_user == null) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('Profile'),
-        ),
-        body: const Center(
-          child: Text('User not found. Please login again.'),
-        ),
+        appBar: AppBar(title: const Text('Profile')),
+        body: const Center(child: Text('User not found. Please login again.')),
       );
     }
-    
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('My Profile'),
@@ -1652,16 +1656,15 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                   backgroundColor: Colors.grey[200],
                   backgroundImage: _newProfilePicture != null
                       ? FileImage(_newProfilePicture!)
-                      : (_user!['profilePicture'] != null && _user!['profilePicture'].isNotEmpty)
-                          ? FileImage(File(_user!['profilePicture']))
-                          : null,
-                  child: (_newProfilePicture == null && 
-                         (_user!['profilePicture'] == null || _user!['profilePicture'].isEmpty))
-                      ? const Icon(
-                          Icons.person,
-                          size: 60,
-                          color: Colors.grey,
-                        )
+                      : (_user!['profilePicture'] != null &&
+                            _user!['profilePicture'].isNotEmpty)
+                      ? FileImage(File(_user!['profilePicture']))
+                      : null,
+                  child:
+                      (_newProfilePicture == null &&
+                          (_user!['profilePicture'] == null ||
+                              _user!['profilePicture'].isEmpty))
+                      ? const Icon(Icons.person, size: 60, color: Colors.grey)
                       : null,
                 ),
                 if (_isEditing)
@@ -1675,7 +1678,11 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                         border: Border.all(color: Colors.white, width: 3),
                       ),
                       child: IconButton(
-                        icon: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
+                        icon: const Icon(
+                          Icons.camera_alt,
+                          color: Colors.white,
+                          size: 20,
+                        ),
                         onPressed: () {
                           showModalBottomSheet(
                             context: context,
@@ -1714,9 +1721,9 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                   ),
               ],
             ),
-            
+
             const SizedBox(height: 20),
-            
+
             // User Info
             if (!_isEditing)
               Column(
@@ -1731,34 +1738,23 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                   const SizedBox(height: 10),
                   Text(
                     _user!['email'],
-                    style: const TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
+                    style: const TextStyle(fontSize: 16, color: Colors.grey),
                   ),
                   const SizedBox(height: 5),
                   Text(
                     'Student ID: ${_user!['studentId']}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
+                    style: const TextStyle(fontSize: 16, color: Colors.grey),
                   ),
-                  if (_user!['phoneNumber'] != null && _user!['phoneNumber'].isNotEmpty)
+                  if (_user!['phoneNumber'] != null &&
+                      _user!['phoneNumber'].isNotEmpty)
                     Text(
                       'Phone: ${_user!['phoneNumber']}',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        color: Colors.grey,
-                      ),
+                      style: const TextStyle(fontSize: 16, color: Colors.grey),
                     ),
                   const SizedBox(height: 10),
                   Text(
                     'Member since: ${DateTime.parse(_user!['createdAt']).toLocal().toString().split(' ')[0]}',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey,
-                    ),
+                    style: const TextStyle(fontSize: 14, color: Colors.grey),
                   ),
                 ],
               )
@@ -1787,21 +1783,18 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                   ),
                 ],
               ),
-            
+
             const SizedBox(height: 30),
             const Divider(),
             const SizedBox(height: 20),
-            
+
             // My Papers Section
             const Text(
               'My Papers',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 10),
-            
+
             _userPapers.isEmpty
                 ? const Padding(
                     padding: EdgeInsets.all(20),
@@ -1838,7 +1831,11 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                                   },
                                 ),
                               IconButton(
-                                icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                                icon: const Icon(
+                                  Icons.delete,
+                                  size: 20,
+                                  color: Colors.red,
+                                ),
                                 onPressed: () async {
                                   await _dbHelper.deleteUserPaper(paper['id']);
                                   await _loadUserData();
@@ -1850,9 +1847,9 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                       );
                     }).toList(),
                   ),
-            
+
             const SizedBox(height: 30),
-            
+
             // Logout Button
             SizedBox(
               width: double.infinity,
@@ -1868,14 +1865,11 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                 ),
                 child: const Text(
                   'Logout',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ),
             ),
-            
+
             const SizedBox(height: 20),
           ],
         ),
@@ -2593,7 +2587,8 @@ class FileStorageManager {
   // Store files with their paper IDs
   final Map<String, File> _fileStorage = {};
   final Map<String, String> _filePaths = {};
-  final Map<String, String> _fileTypes = {}; // Store file type (PDF, IMAGE, etc.)
+  final Map<String, String> _fileTypes =
+      {}; // Store file type (PDF, IMAGE, etc.)
 
   // Store file
   void storeFile(String paperId, File file, String fileType) {
@@ -3740,7 +3735,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                         content: Text(
                           'Paper "${paper['title']}" approved with grade $selectedGrade',
                         ),
-                        duration: Duration(seconds: 3),
+                        duration: const Duration(seconds: 3),
                         backgroundColor: Colors.green,
                       ),
                     );
@@ -3825,7 +3820,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('Paper "${paper['title']}" rejected'),
-                    duration: Duration(seconds: 3),
+                    duration: const Duration(seconds: 3),
                     backgroundColor: Colors.red,
                   ),
                 );
@@ -4358,7 +4353,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     content: Text(
                       'Paper "${paper['title']}" deleted permanently',
                     ),
-                    duration: Duration(seconds: 3),
+                    duration: const Duration(seconds: 3),
                     backgroundColor: Colors.red,
                   ),
                 );
@@ -4708,7 +4703,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Downloading ${paper['title']}...'),
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -5088,7 +5083,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                                   content: Text(
                                     'Paper uploaded and published publicly!',
                                   ),
-                                  duration: Duration(seconds: 2),
+                                  duration: const Duration(seconds: 2),
                                   backgroundColor: Colors.green,
                                 ),
                               );
@@ -5205,7 +5200,7 @@ class _AdminHomePageState extends State<AdminHomePage> {
                     labelStyle: TextStyle(fontSize: 10, color: color),
                   ),
               ],
-            ],
+            ),
           ],
         ),
         trailing: Row(
@@ -5391,7 +5386,7 @@ class _ChatScreenState extends State<ChatScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Message sent!'),
-        duration: Duration(seconds: 1),
+        duration: const Duration(seconds: 1),
       ),
     );
   }
@@ -5508,7 +5503,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              border: Border.top: BorderSide(color: Colors.grey.shade300),
+              border: Border(top: BorderSide(color: Colors.grey.shade300)),
             ),
             child: Row(
               children: [
@@ -5585,7 +5580,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
   // DATA MANAGER
   final PaperDataManager _dataManager = PaperDataManager();
   final MessageManager _messageManager = MessageManager();
-  
+
   // AUTH MANAGER
   final AuthManager _authManager = AuthManager();
   Map<String, dynamic>? _currentUser;
@@ -5694,7 +5689,9 @@ class _StudentHomePageState extends State<StudentHomePage> {
 
     // Check if paper is approved (public) or belongs to student
     final isPublic = paper['isPublic'] == true;
-    final isOwnPaper = paper['studentId'] == _currentUser?['studentId'] || paper['studentId'] == 'STU001';
+    final isOwnPaper =
+        paper['studentId'] == _currentUser?['studentId'] ||
+        paper['studentId'] == 'STU001';
 
     if (!isPublic && !isOwnPaper) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5727,15 +5724,17 @@ class _StudentHomePageState extends State<StudentHomePage> {
 
   // GET UNREAD MESSAGES COUNT FOR STUDENT
   int getUnreadMessagesCount() {
-    return _messageManager.getUnreadMessageCount(_currentUser?['studentId'] ?? 'STU001');
+    return _messageManager.getUnreadMessageCount(
+      _currentUser?['studentId'] ?? 'STU001',
+    );
   }
-  
+
   @override
   void initState() {
     super.initState();
     _loadCurrentUser();
   }
-  
+
   Future<void> _loadCurrentUser() async {
     _currentUser = await _authManager.getCurrentUser();
     setState(() {});
@@ -5749,15 +5748,17 @@ class _StudentHomePageState extends State<StudentHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // GET USER'S PENDING SUBMISSIONS
-    final userPendingSubmissions = _currentUser != null 
+    // FIXED: GET USER'S PENDING SUBMISSIONS WITH TYPE CAST
+    final userPendingSubmissions = _currentUser != null
         ? _dataManager.allPapers
-            .where(
-              (paper) =>
-                  paper['status'] == 'pending' && paper['studentId'] == _currentUser!['studentId'],
-            )
-            .toList()
-        : [];
+              .where(
+                (paper) =>
+                    paper['status'] == 'pending' &&
+                    paper['studentId'] == _currentUser!['studentId'],
+              )
+              .toList()
+              .cast<Map<String, dynamic>>() // ADDED TYPE CAST
+        : <Map<String, dynamic>>[]; // SPECIFIED TYPE FOR EMPTY LIST
 
     // GET PUBLIC PAPERS (APPROVED PAPERS)
     final publicPapers = _dataManager.getPublicPapers();
@@ -5775,14 +5776,16 @@ class _StudentHomePageState extends State<StudentHomePage> {
           children: [
             CircleAvatar(
               backgroundColor: Colors.blue,
-              backgroundImage: _currentUser != null && 
-                  _currentUser!['profilePicture'] != null && 
-                  _currentUser!['profilePicture'].isNotEmpty
+              backgroundImage:
+                  _currentUser != null &&
+                      _currentUser!['profilePicture'] != null &&
+                      _currentUser!['profilePicture'].isNotEmpty
                   ? FileImage(File(_currentUser!['profilePicture']))
                   : null,
-              child: _currentUser == null || 
-                  _currentUser!['profilePicture'] == null || 
-                  _currentUser!['profilePicture'].isEmpty
+              child:
+                  _currentUser == null ||
+                      _currentUser!['profilePicture'] == null ||
+                      _currentUser!['profilePicture'].isEmpty
                   ? const Icon(Icons.person, color: Colors.white, size: 24)
                   : null,
             ),
@@ -5951,22 +5954,22 @@ class _StudentHomePageState extends State<StudentHomePage> {
                 label: 'Profile',
               ),
             ],
-          ),
-        ),
+          );
+        },
       ),
     );
   }
-  
+
   Future<void> _logout() async {
     try {
       await _authManager.logout();
-      
+
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (context) => const WelcomePage()),
         (route) => false,
       );
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Logged out successfully'),
@@ -5977,7 +5980,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error logging out: $e'),
-          duration: Duration(seconds: 3),
+          duration: const Duration(seconds: 3),
           backgroundColor: Colors.red,
         ),
       );
@@ -6823,8 +6826,11 @@ class _StudentHomePageState extends State<StudentHomePage> {
                                 'fileSize':
                                     '${_selectedStudentFile!.lengthSync() ~/ 1024}KB',
                                 'date': DateTime.now().toString().split(' ')[0],
-                                'studentId': _currentUser?['studentId'] ?? 'STU001',
-                                'studentName': _currentUser?['fullName'] ?? 'Current Student',
+                                'studentId':
+                                    _currentUser?['studentId'] ?? 'STU001',
+                                'studentName':
+                                    _currentUser?['fullName'] ??
+                                    'Current Student',
                                 'abstract':
                                     descriptionController.text.isNotEmpty
                                     ? descriptionController.text
@@ -6855,8 +6861,10 @@ class _StudentHomePageState extends State<StudentHomePage> {
                               _messageManager.addMessage(
                                 Message(
                                   id: 'MSG${DateTime.now().millisecondsSinceEpoch}',
-                                  senderId: _currentUser?['studentId'] ?? 'STU001',
-                                  senderName: _currentUser?['fullName'] ?? 'Student',
+                                  senderId:
+                                      _currentUser?['studentId'] ?? 'STU001',
+                                  senderName:
+                                      _currentUser?['fullName'] ?? 'Student',
                                   receiverId: 'ADMIN',
                                   text:
                                       'I have submitted a new paper: "${titleController.text}" for review.',
@@ -6915,14 +6923,17 @@ class _StudentHomePageState extends State<StudentHomePage> {
   }
 
   void _showNotifications(BuildContext context) {
+    // FIXED: Added type cast for userPendingSubmissions
     final userPendingSubmissions = _currentUser != null
         ? _dataManager.allPapers
-            .where(
-              (paper) =>
-                  paper['status'] == 'pending' && paper['studentId'] == _currentUser!['studentId'],
-            )
-            .toList()
-        : [];
+              .where(
+                (paper) =>
+                    paper['status'] == 'pending' &&
+                    paper['studentId'] == _currentUser!['studentId'],
+              )
+              .toList()
+              .cast<Map<String, dynamic>>()
+        : <Map<String, dynamic>>[];
 
     showModalBottomSheet(
       context: context,
@@ -7497,7 +7508,7 @@ class _StudentHomePageState extends State<StudentHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Downloading ${paper['title']}...'),
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -7591,15 +7602,17 @@ class _StudentHomePageState extends State<StudentHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Downloading ${exercise['title']}...'),
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
 
   void _showSubmissionHistory(BuildContext context) {
+    // FIXED: Added type cast for userPapers
     final userPapers = _dataManager.allPapers
         .where((paper) => paper['studentId'] == _currentUser?['studentId'])
-        .toList();
+        .toList()
+        .cast<Map<String, dynamic>>();
 
     showDialog(
       context: context,
