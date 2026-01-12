@@ -8,7 +8,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:pdfx/pdfx.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as path_lib;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_animations/flutter_map_animations.dart';
 import 'package:geolocator/geolocator.dart';
@@ -16,10 +15,10 @@ import 'package:geocoding/geocoding.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:get/get.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
-
+import 'package:path/path.dart' as path_lib;
+import 'package:path/path.dart' as path_package;
 // ==============================================
 // DATABASE HELPER FOR SQLITE
 // ==============================================
